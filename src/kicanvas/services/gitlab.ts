@@ -143,15 +143,16 @@ export class GitLab {
         path: string,
         ref?: string,
     ) {
-        return await this.request(`repos/${owner}/${repo}/contents/${path}`, {
-            ref: ref ?? "",
-        });
+        let project: any = await this.request(`projects/${repo}`, {});
+
+        return await this.request(
+            `projects/${project.id}/repository/tree?path=${path}`,
+        );
     }
 }
 
 export class GitLabUserContent {
-    static readonly html_base_url = "https://gitlab.com";
-    static readonly base_url = this.html_base_url + "/api/v4/";
+    static readonly base_url = "https://gitlab.com/";
 
     constructor() {}
 
@@ -175,7 +176,7 @@ export class GitLabUserContent {
     convert_url(url: string | URL): URL {
         const u = new URL(url, "https://gitlab.com/");
 
-        if (u.host == "raw.githubusercontent.com") {
+        if (u.pathname.includes("/-/raw/")) {
             return u;
         }
 
@@ -183,7 +184,7 @@ export class GitLabUserContent {
 
         if (parts.length < 4) {
             throw new Error(
-                `URL ${url} can't be converted to a raw.githubusercontent.com URL`,
+                `URL ${url} can't be converted to a raw GitLab URL`,
             );
         }
 
@@ -191,11 +192,11 @@ export class GitLabUserContent {
 
         if (blob != "blob") {
             throw new Error(
-                `URL ${url} can't be converted to a raw.githubusercontent.com URL`,
+                `URL ${url} can't be converted to a raw GitLab URL`,
             );
         }
 
-        const path = [user, repo, ref, ...path_parts].join("/");
+        const path = [user, repo, "-", "raw", ref, ...path_parts].join("/");
 
         return new URL(path, GitLabUserContent.base_url);
     }

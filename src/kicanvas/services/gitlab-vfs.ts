@@ -10,8 +10,8 @@ import { GitLab, GitLabUserContent } from "./gitlab";
 import { VirtualFileSystem } from "./vfs";
 
 const kicad_extensions = ["kicad_pcb", "kicad_pro", "kicad_sch"];
-const gh_user_content = new GitLabUserContent();
-const gh = new GitLab();
+const gl_user_content = new GitLabUserContent();
+const gl = new GitLab();
 
 /**
  * Virtual file system for GitLab.
@@ -36,7 +36,7 @@ export class GitLabFileSystem extends VirtualFileSystem {
 
             // Link to a single file.
             if (info.type == "blob") {
-                const guc_url = gh_user_content.convert_url(url);
+                const guc_url = gl_user_content.convert_url(url);
                 const name = basename(guc_url);
                 files_to_urls.set(name, guc_url);
             }
@@ -44,16 +44,16 @@ export class GitLabFileSystem extends VirtualFileSystem {
             // Link to a directory.
             else if (info.type == "tree") {
                 // Get a list of files in the directory.
-                const gh_file_list = (await gh.repos_contents(
+                const gl_file_list = (await gl.repos_contents(
                     info.owner,
                     info.repo,
                     info.path ?? "",
                     info.ref,
                 )) as Record<string, string>[];
 
-                for (const gh_file of gh_file_list) {
-                    const name = gh_file["name"];
-                    const download_url = gh_file["download_url"];
+                for (const gl_file of gl_file_list) {
+                    const name = gl_file["name"];
+                    const download_url = gl_file["download_url"];
                     if (
                         !name ||
                         !download_url ||
@@ -81,7 +81,7 @@ export class GitLabFileSystem extends VirtualFileSystem {
             throw new Error(`File ${name} not found!`);
         }
 
-        return gh_user_content.get(url);
+        return gl_user_content.get(url);
     }
 
     public override has(name: string) {

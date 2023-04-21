@@ -113,7 +113,7 @@ class KiCanvasAppElement extends KCUIElement {
             if (!GitLab.parse_url(link)) {
                 return;
             } else {
-                vfs = await GitHubFileSystem.fromURLs(link);
+                vfs = await GitLabFileSystem.fromURLs(link);
                 location.searchParams.set("gitlab", link);
             }
 
