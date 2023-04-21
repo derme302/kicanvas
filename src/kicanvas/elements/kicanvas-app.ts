@@ -27,6 +27,8 @@ import "../icons/sprites";
 import "./kc-board/viewer";
 import "./kc-schematic/viewer";
 import "./project-panel";
+import { GitLabFileSystem } from "../services/gitlab-vfs";
+import { GitLab } from "../services/gitlab";
 
 // Setup KCUIIconElement to use icon sprites.
 KCUIIconElement.sprites_url = sprites_url;
@@ -65,6 +67,7 @@ class KiCanvasAppElement extends KCUIElement {
     override initialContentCallback() {
         const url_params = new URLSearchParams(document.location.search);
         const github_paths = url_params.getAll("github");
+        const gitlab_paths = url_params.getAll("gitlab");
 
         later(async () => {
             if (this.src) {
@@ -75,6 +78,12 @@ class KiCanvasAppElement extends KCUIElement {
 
             if (github_paths.length) {
                 const vfs = await GitHubFileSystem.fromURLs(...github_paths);
+                await this.setup_project(vfs);
+                return;
+            }
+
+            if (gitlab_paths.length) {
+                const vfs = await GitLabFileSystem.fromURLs(...gitlab_paths);
                 await this.setup_project(vfs);
                 return;
             }
@@ -92,15 +101,23 @@ class KiCanvasAppElement extends KCUIElement {
 
         this.link_input.addEventListener("input", async (e) => {
             const link = this.link_input.value;
+            let vfs;
+            const location = new URL(window.location.href);
+
             if (!GitHub.parse_url(link)) {
                 return;
+            } else {
+                vfs = await GitHubFileSystem.fromURLs(link);
+                location.searchParams.set("github", link);
+            }
+            if (!GitLab.parse_url(link)) {
+                return;
+            } else {
+                vfs = await GitHubFileSystem.fromURLs(link);
+                location.searchParams.set("gitlab", link);
             }
 
-            const vfs = await GitHubFileSystem.fromURLs(link);
             await this.setup_project(vfs);
-
-            const location = new URL(window.location.href);
-            location.searchParams.set("github", link);
             window.history.pushState(null, "", location);
         });
     }
@@ -196,7 +213,7 @@ class KiCanvasAppElement extends KCUIElement {
                     <input
                         name="link"
                         type="text"
-                        placeholder="Paste a GitHub link"
+                        placeholder="Paste a GitHub or GitLab link"
                         autofocus />
                     <p>or drag & drop your KiCAD files</p>
                     <p class="github">
