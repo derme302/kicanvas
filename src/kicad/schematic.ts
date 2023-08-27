@@ -5,9 +5,16 @@
 */
 
 import { Color } from "../base/color";
-import { Vec2 } from "../base/math";
 import * as log from "../base/log";
-import { At, Effects, Paper, Stroke, TitleBlock } from "./common";
+import { Arc as MathArc, Vec2 } from "../base/math";
+import {
+    At,
+    Effects,
+    Paper,
+    Stroke,
+    TitleBlock,
+    expand_text_vars,
+} from "./common";
 import { P, T, parse_expr, type Parseable } from "./parser";
 
 /* Default values for various things found in schematics
@@ -61,7 +68,7 @@ export class KicadSch {
     net_labels: NetLabel[] = [];
     global_labels: GlobalLabel[] = [];
     hierarchical_labels: HierarchicalLabel[] = [];
-    symbols: SchematicSymbol[] = [];
+    symbols = new Map<string, SchematicSymbol>();
     no_connects: NoConnect[] = [];
     drawings: (Polyline | Text)[] = [];
     images: Image[] = [];
@@ -80,7 +87,7 @@ export class KicadSch {
                 P.pair("uuid", T.string),
                 P.item("paper", Paper),
                 P.item("title_block", TitleBlock),
-                P.item("lib_symbols", LibSymbols),
+                P.item("lib_symbols", LibSymbols, this),
                 P.collection("wires", "wire", T.item(Wire)),
                 P.collection("buses", "bus", T.item(Bus)),
                 P.collection("bus_entries", "bus_entry", T.item(BusEntry)),
@@ -91,27 +98,28 @@ export class KicadSch {
                 P.collection(
                     "global_labels",
                     "global_label",
-                    T.item(GlobalLabel),
+                    T.item(GlobalLabel, this),
                 ),
                 P.collection(
                     "hierarchical_labels",
                     "hierarchical_label",
-                    T.item(HierarchicalLabel),
+                    T.item(HierarchicalLabel, this),
                 ),
                 // images
-                // sheets
-                P.collection(
+                P.mapped_collection(
                     "symbols",
                     "symbol",
+                    (p: SchematicSymbol) => p.uuid,
                     T.item(SchematicSymbol, this),
                 ),
                 P.collection("drawings", "polyline", T.item(Polyline, this)),
                 P.collection("drawings", "rectangle", T.item(Rectangle, this)),
+                P.collection("drawings", "arc", T.item(Arc, this)),
                 P.collection("drawings", "text", T.item(Text, this)),
                 P.collection("images", "image", T.item(Image)),
                 P.item("sheet_instances", SheetInstances),
                 P.item("symbol_instances", SymbolInstances),
-                P.collection("sheets", "sheet", T.item(SchematicSheet)),
+                P.collection("sheets", "sheet", T.item(SchematicSheet, this)),
             ),
         );
 
@@ -126,7 +134,7 @@ export class KicadSch {
 
         const global_symbol_instances = this.symbol_instances?.symbol_instances;
 
-        for (const s of this.symbols) {
+        for (const s of this.symbols.values()) {
             const instance_data =
                 global_symbol_instances?.get(`${path}/${s.uuid}`) ??
                 s.instances.get(path);
@@ -174,14 +182,17 @@ export class KicadSch {
         yield* this.global_labels;
         yield* this.hierarchical_labels;
         yield* this.no_connects;
-        yield* this.symbols;
+        yield* this.symbols.values();
         yield* this.drawings;
         yield* this.images;
         yield* this.sheets;
     }
 
     find_symbol(uuid_or_ref: string) {
-        for (const sym of this.symbols) {
+        if (this.symbols.has(uuid_or_ref)) {
+            return this.symbols.get(this.uuid)!;
+        }
+        for (const sym of this.symbols.values()) {
             if (sym.uuid == uuid_or_ref || sym.reference == uuid_or_ref) {
                 return sym;
             }
@@ -198,10 +209,22 @@ export class KicadSch {
         return null;
     }
 
-    get text_vars(): Map<string, string | undefined> {
-        const vars = this.title_block.text_vars;
-        vars.set("FILENAME", this.filename);
-        return vars;
+    resolve_text_var(name: string): string | undefined {
+        if (name == "FILENAME") {
+            return this.filename;
+        }
+
+        // Cross-reference
+        if (name.includes(":")) {
+            const [uuid, field_name] = name.split(":") as [string, string];
+            const symbol = this.symbols.get(uuid);
+
+            if (symbol) {
+                return symbol.resolve_text_var(field_name);
+            }
+        }
+
+        return this.title_block.resolve_text_var(name);
     }
 }
 
@@ -373,22 +396,58 @@ export class Arc extends GraphicItem {
 
     constructor(expr: Parseable, parent?: LibSymbol | SchematicSymbol) {
         /*
+        Current form:
         (arc (start 2.032 -1.27) (mid 0 -0.5572) (end -2.032 -1.27)
           (stroke (width 0.508) (type default) (color 0 0 0 0))
           (fill (type none)))
+
+        Previous form:
+        (arc (start -0.254 1.016) (end -0.254 -1.016)
+          (radius (at -0.254 0) (length 1.016) (angles 90.1 -90.1))
+          (stroke (width 0)) (fill(type none)))
         */
         super(parent);
-        Object.assign(
-            this,
-            parse_expr(
-                expr,
-                P.start("arc"),
-                P.vec2("start"),
-                P.vec2("mid"),
-                P.vec2("end"),
-                ...GraphicItem.common_expr_defs,
+
+        const parsed = parse_expr(
+            expr,
+            P.start("arc"),
+            P.vec2("start"),
+            P.vec2("mid"),
+            P.vec2("end"),
+            P.object(
+                "radius",
+                {},
+                P.start("radius"),
+                P.vec2("at"),
+                P.pair("length"),
+                P.vec2("angles"),
             ),
+            ...GraphicItem.common_expr_defs,
         );
+
+        // Deal with old format
+        if (parsed["radius"]?.["length"]) {
+            const arc = MathArc.from_center_start_end(
+                parsed["radius"]["at"],
+                parsed["end"],
+                parsed["start"],
+                1,
+            );
+
+            if (arc.arc_angle.degrees > 180) {
+                [arc.start_angle, arc.end_angle] = [
+                    arc.end_angle,
+                    arc.start_angle,
+                ];
+            }
+
+            parsed["start"] = arc.start_point;
+            parsed["mid"] = arc.mid_point;
+            parsed["end"] = arc.end_point;
+        }
+        delete parsed["radius"];
+
+        Object.assign(this, parsed);
     }
 }
 
@@ -525,7 +584,10 @@ export class Text {
     effects = new Effects();
     uuid?: string;
 
-    constructor(expr: Parseable) {
+    constructor(
+        expr: Parseable,
+        public parent: KicadSch | LibSymbol | SchematicSymbol,
+    ) {
         /*
         (text "SWD" (at -5.08 0 900)
           (effects (font (size 2.54 2.54))))
@@ -547,11 +609,18 @@ export class Text {
             this.text = this.text.slice(0, this.text.length - 1);
         }
     }
+
+    get shown_text() {
+        return expand_text_vars(this.text, this.parent);
+    }
 }
 
 export class LibText extends Text {
-    constructor(expr: Parseable, public parent?: LibSymbol | SchematicSymbol) {
-        super(expr);
+    constructor(
+        expr: Parseable,
+        public override parent: LibSymbol | SchematicSymbol,
+    ) {
+        super(expr, parent);
 
         if (parent instanceof LibSymbol || parent instanceof SchematicSymbol) {
             // From sch_sexpr_parser.cpp:LIB_TEXT* SCH_SEXPR_PARSER::parseText()
@@ -679,13 +748,13 @@ export class LibSymbols {
     symbols: LibSymbol[] = [];
     #symbols_by_name: Map<string, LibSymbol> = new Map();
 
-    constructor(expr: Parseable) {
+    constructor(expr: Parseable, public parent: KicadSch) {
         Object.assign(
             this,
             parse_expr(
                 expr,
                 P.start("lib_symbols"),
-                P.collection("symbols", "symbol", T.item(LibSymbol)),
+                P.collection("symbols", "symbol", T.item(LibSymbol, parent)),
             ),
         );
 
@@ -723,7 +792,7 @@ export class LibSymbol {
     #pins_by_number: Map<string, PinDefinition> = new Map();
     #properties_by_id: Map<number, Property> = new Map();
 
-    constructor(expr: Parseable, public parent?: LibSymbol) {
+    constructor(expr: Parseable, public parent?: LibSymbol | KicadSch) {
         Object.assign(
             this,
             parse_expr(
@@ -777,7 +846,7 @@ export class LibSymbol {
     }
 
     get root(): LibSymbol {
-        if (this.parent) {
+        if (this.parent instanceof LibSymbol) {
             return this.parent.root;
         }
         return this;
@@ -787,12 +856,15 @@ export class LibSymbol {
         return this.#pins_by_number.has(number);
     }
 
-    pin_by_number(number: string): PinDefinition {
+    pin_by_number(number: string, style = 1): PinDefinition {
         if (this.has_pin(number)) {
             return this.#pins_by_number.get(number)!;
         }
         for (const child of this.children) {
-            if (child.has_pin(number)) {
+            if (
+                (child.style == 0 || child.style == style) &&
+                child.has_pin(number)
+            ) {
                 return child.pin_by_number(number);
             }
         }
@@ -817,6 +889,22 @@ export class LibSymbol {
         return null;
     }
 
+    get library_name() {
+        if (this.name.includes(":")) {
+            return this.name.split(":").at(0)!;
+        }
+
+        return "";
+    }
+
+    get library_item_name() {
+        if (this.name.includes(":")) {
+            return this.name.split(":").at(1)!;
+        }
+
+        return "";
+    }
+
     get unit_count(): number {
         // Unit 0 is common to all units, so it doesn't count towards
         // the total number of units.
@@ -829,16 +917,31 @@ export class LibSymbol {
         return count;
     }
 
-    get unit(): number | null {
+    get unit(): number {
         // KiCAD encodes the symbol unit into the name, for example,
         // MCP6001_1_1 is unit 1 and MCP6001_2_1 is unit 2.
+        // Unit 0 is common to all units.
         // See SCH_SEXPR_PARSER::ParseSymbol.
         const parts = this.name.split("_");
         if (parts.length < 3) {
-            return null;
+            return 0;
         }
 
         return parseInt(parts.at(-2)!, 10);
+    }
+
+    get style(): number {
+        // KiCAD "De Morgan" body styles are indicated with a number greater
+        // than one at the end of the symbol name.
+        // MCP6001_1_1 is the normal body and and MCP6001_1_2 is the alt style.
+        // Style 0 is common to all styles.
+        // See SCH_SEXPR_PARSER::ParseSymbol.
+        const parts = this.name.split("_");
+        if (parts.length < 3) {
+            return 0;
+        }
+
+        return parseInt(parts.at(-1)!, 10);
     }
 
     get description(): string {
@@ -855,6 +958,10 @@ export class LibSymbol {
 
     get units_interchangable(): boolean {
         return this.properties.get("ki_locked")?.text ? false : true;
+    }
+
+    resolve_text_var(name: string): string | undefined {
+        return this.parent?.resolve_text_var(name);
     }
 }
 
@@ -902,6 +1009,10 @@ export class Property {
 
     set effects(e: Effects) {
         this.#effects = e;
+    }
+
+    get shown_text() {
+        return expand_text_vars(this.text, this.parent);
     }
 }
 
@@ -1013,7 +1124,7 @@ export class SchematicSymbol {
     at: At;
     mirror?: "x" | "y";
     unit?: number;
-    convert? = false;
+    convert: number;
     in_bom = false;
     on_board = false;
     dnp = false;
@@ -1050,7 +1161,7 @@ export class SchematicSymbol {
             P.item("at", At),
             P.pair("mirror", T.string),
             P.pair("unit", T.number),
-            P.atom("convert"),
+            P.pair("convert", T.number),
             P.pair("in_bom", T.boolean),
             P.pair("on_board", T.boolean),
             P.pair("dnp", T.boolean),
@@ -1202,6 +1313,45 @@ export class SchematicSymbol {
             return true;
         });
     }
+
+    resolve_text_var(name: string): string | undefined {
+        if (this.properties.has(name)) {
+            return this.properties.get(name)?.shown_text;
+        }
+
+        switch (name) {
+            case "REFERENCE":
+                return this.reference;
+            case "VALUE":
+                return this.value;
+            case "FOOTPRINT":
+                return this.footprint;
+            case "DATASHEET":
+                return this.properties.get("Datasheet")?.name;
+            case "FOOTPRINT_LIBRARY":
+                return this.footprint.split(":").at(0);
+            case "FOOTPRINT_NAME":
+                return this.footprint.split(":").at(-1);
+            case "UNIT":
+                return this.unit_suffix;
+            case "SYMBOL_LIBRARY":
+                return this.lib_symbol.library_name;
+            case "SYMBOL_NAME":
+                return this.lib_symbol.library_item_name;
+            case "SYMBOL_DESCRIPTION":
+                return this.lib_symbol.description;
+            case "SYMBOL_KEYWORDS":
+                return this.lib_symbol.keywords;
+            case "EXCLUDE_FROM_BOM":
+                return this.in_bom ? "" : "Excluded from BOM";
+            case "EXCLUDE_FROM_BOARD":
+                return this.on_board ? "" : "Excluded from board";
+            case "DNP":
+                return this.dnp ? "DNP" : "";
+        }
+
+        return this.parent.resolve_text_var(name);
+    }
 }
 
 export class SchematicSymbolInstance {
@@ -1235,7 +1385,10 @@ export class PinInstance {
     }
 
     get definition() {
-        return this.parent.lib_symbol.pin_by_number(this.number);
+        return this.parent.lib_symbol.pin_by_number(
+            this.number,
+            this.parent.convert,
+        );
     }
 
     get unit() {
@@ -1341,7 +1494,7 @@ export class SchematicSheet {
     page?: string;
     path?: string;
 
-    constructor(expr: Parseable) {
+    constructor(expr: Parseable, public parent: KicadSch) {
         const parsed = parse_expr(
             expr,
             P.start("sheet"),
@@ -1418,6 +1571,10 @@ export class SchematicSheet {
             this.get_property_text("Sheetfile") ??
             this.get_property_text("Sheet file")
         );
+    }
+
+    resolve_text_var(name: string): string | undefined {
+        return this.parent?.resolve_text_var(name);
     }
 }
 

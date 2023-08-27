@@ -32,23 +32,29 @@ export abstract class Renderer implements IDisposable {
     canvas: HTMLCanvasElement;
     canvas_size: Vec2 = new Vec2(0, 0);
     state: RenderStateStack = new RenderStateStack();
-    theme: Record<string, Color | Record<string, Color>>;
+    #background_color: Color = Color.black.copy();
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
+        this.background_color = this.#background_color;
+    }
+
+    get background_color(): Color {
+        return this.#background_color;
+    }
+
+    set background_color(color: Color) {
+        this.#background_color = color;
+        this.canvas.style.backgroundColor = this.background_color.to_css();
     }
 
     abstract setup(): Promise<void>;
 
     abstract dispose(): void;
 
-    get background_color(): Color {
-        return (this.theme?.["background"] as Color) ?? new Color(0, 0, 0, 1);
-    }
-
     /**
      * Update the canvas and context with the new viewport size if needed. This
-     * is typicallyed called by clear_canvas().
+     * is typically called by clear_canvas().
      */
     abstract update_canvas_size(): void;
 

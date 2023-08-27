@@ -6,7 +6,11 @@
 
 import { BBox, Vec2 } from "../../base/math";
 import * as log from "../../base/log";
-import { DrawingSheet, type DrawingSheetDocument } from "../../kicad";
+import {
+    DrawingSheet,
+    type DrawingSheetDocument,
+    type BaseTheme,
+} from "../../kicad";
 import { DrawingSheetPainter } from "../drawing-sheet/painter";
 import { Grid } from "./grid";
 import type { DocumentPainter, PaintableDocument } from "./painter";
@@ -20,13 +24,20 @@ export abstract class DocumentViewer<
     DocumentT extends ViewableDocument,
     PainterT extends DocumentPainter,
     ViewLayerSetT extends ViewLayerSet,
+    ThemeT extends BaseTheme,
 > extends Viewer {
     public document: DocumentT;
     public drawing_sheet: DrawingSheet;
     public declare layers: ViewLayerSetT;
+    public theme: ThemeT;
 
     protected painter: PainterT;
     protected grid: Grid;
+
+    constructor(canvas: HTMLCanvasElement, theme: ThemeT) {
+        super(canvas);
+        this.theme = theme;
+    }
 
     protected abstract create_painter(): PainterT;
     protected abstract create_layer_set(): ViewLayerSetT;
@@ -42,36 +53,7 @@ export abstract class DocumentViewer<
         log.start(`Loading ${src.filename} into viewer`);
 
         this.document = src;
-
-        // Load the default drawing sheet.
-        log.message("Loading drawing sheet");
-        this.drawing_sheet = DrawingSheet.default();
-        this.drawing_sheet.document = this.document;
-
-        // Setup graphical layers
-        log.message("Creating layers");
-        this.disposables.disposeAndRemove(this.layers);
-        this.layers = this.disposables.add(this.create_layer_set());
-
-        // Paint the board
-        log.message("Painting items");
-        this.painter = this.create_painter();
-        this.painter.paint(this.document);
-
-        // Paint the drawing sheet
-        log.message("Painting drawing sheet");
-        new DrawingSheetPainter(this.renderer, this.layers).paint(
-            this.drawing_sheet,
-        );
-
-        // Create the grid
-        log.message("Painting grid");
-        this.grid = new Grid(
-            this.renderer,
-            this.viewport.camera,
-            this.layers.by_name(ViewLayerNames.grid)!,
-            this.grid_origin,
-        );
+        this.paint();
 
         // Wait for a valid viewport size
         log.message("Waiting for viewport");
@@ -96,14 +78,62 @@ export abstract class DocumentViewer<
         log.finish();
     }
 
-    protected override on_viewport_change(): void {
-        super.on_viewport_change();
-        this.grid?.update();
+    public paint() {
+        if (!this.document) {
+            return;
+        }
+
+        // Update the renderer's background color to match the theme.
+        this.renderer.background_color = this.theme.background;
+
+        // Load the default drawing sheet.
+        log.message("Loading drawing sheet");
+        if (!this.drawing_sheet) {
+            this.drawing_sheet = DrawingSheet.default();
+        }
+        this.drawing_sheet.document = this.document;
+
+        // Setup graphical layers
+        log.message("Creating layers");
+        this.disposables.disposeAndRemove(this.layers);
+        this.layers = this.disposables.add(this.create_layer_set());
+
+        // Paint the board
+        log.message("Painting items");
+        this.painter = this.create_painter();
+        this.painter.paint(this.document);
+
+        // Paint the drawing sheet
+        log.message("Painting drawing sheet");
+        new DrawingSheetPainter(this.renderer, this.layers, this.theme).paint(
+            this.drawing_sheet,
+        );
+
+        // Create the grid
+        log.message("Painting grid");
+        this.grid = new Grid(
+            this.renderer,
+            this.viewport.camera,
+            this.layers.by_name(ViewLayerNames.grid)!,
+            this.grid_origin,
+            this.theme.grid,
+            this.theme.grid_axes,
+        );
     }
 
-    override zoom_to_page() {
+    public override zoom_to_page() {
         this.viewport.camera.bbox = this.drawing_sheet.page_bbox.grow(10);
         this.draw();
+    }
+
+    public override draw(): void {
+        if (!this.viewport) {
+            return;
+        }
+
+        this.grid?.update();
+
+        super.draw();
     }
 
     public override select(item: BBox | null): void {

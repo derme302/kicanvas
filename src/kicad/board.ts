@@ -32,7 +32,7 @@ export class KicadPCB {
     paper?: Paper;
     title_block = new TitleBlock();
     setup?: Setup;
-    properties: Property[] = [];
+    properties = new Map<string, Property>();
     layers: Layer[] = [];
     nets: Net[] = [];
     footprints: Footprint[] = [];
@@ -55,7 +55,12 @@ export class KicadPCB {
                 P.item("title_block", TitleBlock),
                 P.list("layers", T.item(Layer)),
                 P.item("setup", Setup),
-                P.collection("properties", "property", T.item(Property)),
+                P.mapped_collection(
+                    "properties",
+                    "property",
+                    (p: Property) => p.name,
+                    T.item(Property, this),
+                ),
                 P.collection("nets", "net", T.item(Net)),
                 P.collection(
                     "footprints",
@@ -86,13 +91,16 @@ export class KicadPCB {
         yield* this.footprints;
     }
 
-    get text_vars(): Map<string, string | undefined> {
-        const vars = this.title_block.text_vars;
-        for (const p of this.properties) {
-            vars.set(p.name, p.value);
+    resolve_text_var(name: string): string | undefined {
+        if (name == "FILENAME") {
+            return this.filename;
         }
-        vars.set("FILENAME", this.filename);
-        return vars;
+
+        if (this.properties.has(name)) {
+            return this.properties.get(name)!.value;
+        }
+
+        return this.title_block.resolve_text_var(name);
     }
 
     get edge_cuts_bbox(): BBox {
@@ -619,8 +627,8 @@ export class Dimension {
         );
     }
 
-    get text_vars(): Map<string, string | undefined> {
-        return new Map(this.parent.text_vars);
+    resolve_text_var(name: string): string | undefined {
+        return this.parent.resolve_text_var(name);
     }
 
     get start(): Vec2 {
@@ -760,6 +768,7 @@ export class Footprint {
     properties: Record<string, string> = {};
     drawings: FootprintDrawings[] = [];
     pads: Pad[] = [];
+    #pads_by_number = new Map<string, Pad>();
     zones: Zone[] = [];
     models: Model[] = [];
     #bbox: BBox;
@@ -811,10 +820,14 @@ export class Footprint {
                 P.collection("drawings", "fp_rect", T.item(FpRect, this)),
                 P.collection("drawings", "fp_text", T.item(FpText, this)),
                 P.collection("zones", "zone", T.item(Zone, this)),
-                P.collection("pads", "pad", T.item(Pad, this)),
                 P.collection("models", "model", T.item(Model)),
+                P.collection("pads", "pad", T.item(Pad, this)),
             ),
         );
+
+        for (const pad of this.pads) {
+            this.#pads_by_number.set(pad.number, pad);
+        }
 
         for (const d of this.drawings) {
             if (!(d instanceof FpText)) {
@@ -837,29 +850,50 @@ export class Footprint {
     *items(): Generator<FootprintDrawings | Pad | Zone, void, undefined> {
         yield* this.drawings ?? [];
         yield* this.zones ?? [];
-        yield* this.pads ?? [];
+        yield* this.pads.values() ?? [];
     }
 
-    get text_vars(): Map<string, string | undefined> {
-        const vars = new Map<string, string | undefined>([
-            ["REFERENCE", this.reference],
-            ["VALUE", this.value],
-            ["LAYER", this.layer],
-            ["FOOTPRINT_LIBRARY", this.library_link.split(":")[0]],
-            ["FOOTPRINT_NAME", this.library_link.split(":").at(-1)],
-        ]);
-
-        for (const [k, v] of Object.entries(this.properties)) {
-            vars.set(k, v);
+    resolve_text_var(name: string): string | undefined {
+        switch (name) {
+            case "REFERENCE":
+                return this.reference;
+            case "VALUE":
+                return this.value;
+            case "LAYER":
+                return this.layer;
+            case "FOOTPRINT_LIBRARY":
+                return this.library_link.split(":").at(0);
+            case "FOOTPRINT_NAME":
+                return this.library_link.split(":").at(-1);
         }
 
-        for (const pad of this.pads) {
-            vars.set(`NET_NAME(${pad.number})`, `${pad.net?.number ?? ""}`);
-            vars.set(`NET_CLASS(${pad.number})`, pad.net?.name ?? "");
-            vars.set(`PIN_NAME(${pad.number})`, pad.pinfunction ?? "");
+        const pad_expr = /^(NET_NAME|NET_CLASS|PIN_NAME)\(.+?\)$/.exec(name);
+
+        if (pad_expr?.length == 3) {
+            const [_, expr_type, pad_name] = pad_expr as unknown as [
+                string,
+                string,
+                string,
+            ];
+            switch (expr_type) {
+                case "NET_NAME":
+                    return this.pad_by_number(pad_name)?.net.number.toString();
+                case "NET_CLASS":
+                    return this.pad_by_number(pad_name)?.net.name;
+                case "PIN_NAME":
+                    return this.pad_by_number(pad_name)?.pinfunction;
+            }
         }
 
-        return new Map([...this.parent.text_vars, ...vars]);
+        if (this.properties[name] !== undefined) {
+            return this.properties[name]!;
+        }
+
+        return this.parent.resolve_text_var(name);
+    }
+
+    pad_by_number(number: string): Pad {
+        return this.#pads_by_number.get(number)!;
     }
 
     /**
@@ -1017,38 +1051,69 @@ export class Arc extends GraphicItem {
     end: Vec2;
     width: number;
     stroke: Stroke;
+    #arc: MathArc;
 
     constructor(expr: Parseable, public override parent?: Footprint) {
         super();
 
         const static_this = this.constructor as typeof Arc;
 
-        Object.assign(
-            this,
-            parse_expr(
-                expr,
-                P.start(static_this.expr_start),
-                P.atom("locked"),
-                P.pair("layer", T.string),
-                P.vec2("start"),
-                P.vec2("mid"),
-                P.vec2("end"),
-                P.pair("width", T.number),
-                P.pair("tstamp", T.string),
-                P.item("stroke", Stroke),
-            ),
+        const parsed = parse_expr(
+            expr,
+            P.start(static_this.expr_start),
+            P.atom("locked"),
+            P.pair("layer", T.string),
+            P.vec2("start"),
+            P.vec2("mid"),
+            P.vec2("end"),
+            P.pair("angle", T.number),
+            P.pair("width", T.number),
+            P.pair("tstamp", T.string),
+            P.item("stroke", Stroke),
         );
 
-        this.width ??= this.stroke?.width || 0;
+        // Handle old format.
+        // See LEGACY_ARC_FORMATTING and EDA_SHAPE::SetArcAngleAndEnd
+        if (parsed["angle"] !== undefined) {
+            const angle = Angle.from_degrees(parsed["angle"]).normalize720();
+            const center = parsed["start"];
+            let start = parsed["end"];
+
+            let end = angle.negative().rotate_point(start, center);
+
+            if (angle.degrees < 0) {
+                [start, end] = [end, start];
+            }
+
+            this.#arc = MathArc.from_center_start_end(
+                center,
+                start,
+                end,
+                parsed["width"],
+            );
+
+            parsed["start"] = this.#arc.start_point;
+            parsed["mid"] = this.#arc.mid_point;
+            parsed["end"] = this.#arc.end_point;
+
+            delete parsed["angle"];
+        } else {
+            this.#arc = MathArc.from_three_points(
+                parsed["start"],
+                parsed["mid"],
+                parsed["end"],
+                parsed["width"],
+            );
+        }
+
+        Object.assign(this, parsed);
+
+        this.width ??= this.stroke?.width ?? this.#arc.width;
+        this.#arc.width = this.width;
     }
 
     get arc() {
-        return MathArc.from_three_points(
-            this.start,
-            this.mid,
-            this.end,
-            this.width,
-        );
+        return this.#arc;
     }
 
     override get bbox() {
@@ -1194,8 +1259,6 @@ export class Text {
     tstamp: string;
     render_cache: TextRenderCache;
 
-    #expanded_text: string;
-
     static common_expr_defs = [
         P.item("at", At),
         P.atom("hide"),
@@ -1212,13 +1275,7 @@ export class Text {
     ];
 
     get shown_text() {
-        if (!this.#expanded_text) {
-            this.#expanded_text = expand_text_vars(
-                this.text,
-                this.parent?.text_vars,
-            );
-        }
-        return this.#expanded_text;
+        return expand_text_vars(this.text, this.parent);
     }
 }
 

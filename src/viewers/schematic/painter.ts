@@ -13,32 +13,20 @@ import {
     Polyline,
     Renderer,
 } from "../../graphics";
+import type { SchematicTheme } from "../../kicad";
 import * as schematic_items from "../../kicad/schematic";
 import { LibText, SchField, SchText, StrokeFont } from "../../kicad/text";
-import { DocumentPainter, ItemPainter } from "../base/painter";
 import { LayerNames, LayerSet, ViewLayer } from "./layers";
+import { BaseSchematicPainter, SchematicItemPainter } from "./painters/base";
 import {
     GlobalLabelPainter,
     HierarchicalLabelPainter,
     NetLabelPainter,
 } from "./painters/label";
 import { PinPainter } from "./painters/pin";
+import { LibSymbolPainter, SchematicSymbolPainter } from "./painters/symbol";
 
-function color_maybe(
-    color?: Color,
-    fallback_color?: Color,
-    fail_color: Color = new Color(1, 0, 0, 1),
-) {
-    if (!color?.is_transparent_black) {
-        return color!;
-    }
-    if (fallback_color) {
-        return fallback_color;
-    }
-    return fail_color;
-}
-
-class RectanglePainter extends ItemPainter {
+class RectanglePainter extends SchematicItemPainter {
     classes = [schematic_items.Rectangle];
 
     layers_for(item: schematic_items.Rectangle) {
@@ -46,12 +34,6 @@ class RectanglePainter extends ItemPainter {
     }
 
     paint(layer: ViewLayer, r: schematic_items.Rectangle) {
-        const color = color_maybe(
-            r.stroke?.color,
-            this.gfx.state.stroke,
-            this.gfx.theme["note"] as Color,
-        );
-
         const pts = [
             r.start,
             new Vec2(r.end.x, r.start.y),
@@ -60,8 +42,15 @@ class RectanglePainter extends ItemPainter {
             r.start,
         ];
 
-        if (r.fill?.type !== "none") {
-            this.gfx.polygon(new Polygon(pts, this.gfx.state.fill));
+        this.#fill(layer, r, pts);
+        this.#stroke(layer, r, pts);
+    }
+
+    #stroke(layer: ViewLayer, r: schematic_items.Rectangle, pts: Vec2[]) {
+        const { width, color } = this.determine_stroke(layer, r);
+
+        if (!width || !color) {
+            return;
         }
 
         this.gfx.line(
@@ -72,9 +61,19 @@ class RectanglePainter extends ItemPainter {
             ),
         );
     }
+
+    #fill(layer: ViewLayer, r: schematic_items.Rectangle, pts: Vec2[]) {
+        const color = this.determine_fill(layer, r);
+
+        if (!color) {
+            return;
+        }
+
+        this.gfx.polygon(new Polygon(pts, color));
+    }
 }
 
-class PolylinePainter extends ItemPainter {
+class PolylinePainter extends SchematicItemPainter {
     classes = [schematic_items.Polyline];
 
     layers_for(item: schematic_items.Polyline) {
@@ -82,27 +81,32 @@ class PolylinePainter extends ItemPainter {
     }
 
     paint(layer: ViewLayer, pl: schematic_items.Polyline) {
-        const color = color_maybe(
-            pl.stroke?.color,
-            this.gfx.state.stroke,
-            this.gfx.theme["note"] as Color,
-        );
+        this.#fill(layer, pl);
+        this.#stroke(layer, pl);
+    }
 
-        this.gfx.line(
-            new Polyline(
-                pl.pts,
-                pl.stroke?.width || this.gfx.state.stroke_width,
-                color,
-            ),
-        );
+    #stroke(layer: ViewLayer, pl: schematic_items.Polyline) {
+        const { width, color } = this.determine_stroke(layer, pl);
 
-        if (pl.fill?.type !== "none") {
-            this.gfx.polygon(new Polygon(pl.pts, this.gfx.state.fill));
+        if (!width || !color) {
+            return;
         }
+
+        this.gfx.line(new Polyline(pl.pts, width, color));
+    }
+
+    #fill(layer: ViewLayer, pl: schematic_items.Polyline) {
+        const color = this.determine_fill(layer, pl);
+
+        if (!color) {
+            return;
+        }
+
+        this.gfx.polygon(new Polygon(pl.pts, color));
     }
 }
 
-class WirePainter extends ItemPainter {
+class WirePainter extends SchematicItemPainter {
     classes = [schematic_items.Wire];
 
     layers_for(item: schematic_items.Wire) {
@@ -111,16 +115,12 @@ class WirePainter extends ItemPainter {
 
     paint(layer: ViewLayer, w: schematic_items.Wire) {
         this.gfx.line(
-            new Polyline(
-                w.pts,
-                this.gfx.state.stroke_width,
-                this.gfx.theme["wire"] as Color,
-            ),
+            new Polyline(w.pts, this.gfx.state.stroke_width, this.theme.wire),
         );
     }
 }
 
-class BusPainter extends ItemPainter {
+class BusPainter extends SchematicItemPainter {
     classes = [schematic_items.Bus];
 
     layers_for(item: schematic_items.Bus) {
@@ -132,13 +132,13 @@ class BusPainter extends ItemPainter {
             new Polyline(
                 w.pts,
                 schematic_items.DefaultValues.bus_width,
-                this.gfx.theme["bus"] as Color,
+                this.theme.bus,
             ),
         );
     }
 }
 
-class BusEntryPainter extends ItemPainter {
+class BusEntryPainter extends SchematicItemPainter {
     classes = [schematic_items.BusEntry];
 
     layers_for(item: schematic_items.BusEntry) {
@@ -150,13 +150,13 @@ class BusEntryPainter extends ItemPainter {
             new Polyline(
                 [be.at.position, be.at.position.add(be.size)],
                 schematic_items.DefaultValues.wire_width,
-                this.gfx.theme["wire"] as Color,
+                this.theme.wire,
             ),
         );
     }
 }
 
-class CirclePainter extends ItemPainter {
+class CirclePainter extends SchematicItemPainter {
     classes = [schematic_items.Circle];
 
     layers_for(item: schematic_items.Circle) {
@@ -164,8 +164,16 @@ class CirclePainter extends ItemPainter {
     }
 
     paint(layer: ViewLayer, c: schematic_items.Circle) {
-        const color =
-            this.gfx.state.stroke ?? (this.gfx.theme["note"] as Color);
+        this.#fill(layer, c);
+        this.#stroke(layer, c);
+    }
+
+    #stroke(layer: ViewLayer, c: schematic_items.Circle) {
+        const { width, color } = this.determine_stroke(layer, c);
+
+        if (!width || !color) {
+            return;
+        }
 
         this.gfx.arc(
             new Arc(
@@ -173,18 +181,24 @@ class CirclePainter extends ItemPainter {
                 c.radius,
                 new Angle(0),
                 new Angle(Math.PI * 2),
-                c.stroke?.width || this.gfx.state.stroke_width,
+                width,
                 color,
             ),
         );
+    }
 
-        if (c.fill?.type != "none") {
-            this.gfx.circle(new Circle(c.center, c.radius, color));
+    #fill(layer: ViewLayer, c: schematic_items.Circle) {
+        const color = this.determine_fill(layer, c);
+
+        if (!color) {
+            return;
         }
+
+        this.gfx.circle(new Circle(c.center, c.radius, color));
     }
 }
 
-class ArcPainter extends ItemPainter {
+class ArcPainter extends SchematicItemPainter {
     classes = [schematic_items.Arc];
 
     layers_for(item: schematic_items.Arc) {
@@ -192,9 +206,6 @@ class ArcPainter extends ItemPainter {
     }
 
     paint(layer: ViewLayer, a: schematic_items.Arc) {
-        const color =
-            this.gfx.state.stroke ?? (this.gfx.theme["note"] as Color);
-
         const arc = MathArc.from_three_points(
             a.start,
             a.mid,
@@ -202,20 +213,41 @@ class ArcPainter extends ItemPainter {
             a.stroke?.width,
         );
 
+        this.#fill(layer, a, arc);
+        this.#stroke(layer, a, arc);
+    }
+
+    #stroke(layer: ViewLayer, a: schematic_items.Arc, arc: MathArc) {
+        const { width, color } = this.determine_stroke(layer, a);
+
+        if (!width || !color) {
+            return;
+        }
+
         this.gfx.arc(
             new Arc(
                 arc.center,
                 arc.radius,
                 arc.start_angle,
                 arc.end_angle,
-                a.stroke?.width || this.gfx.state.stroke_width,
+                width,
                 color,
             ),
         );
     }
+
+    #fill(layer: ViewLayer, a: schematic_items.Arc, arc: MathArc) {
+        const color = this.determine_fill(layer, a);
+
+        if (!color) {
+            return;
+        }
+
+        this.gfx.polygon(new Polygon(arc.to_polygon(), color));
+    }
 }
 
-class JunctionPainter extends ItemPainter {
+class JunctionPainter extends SchematicItemPainter {
     classes = [schematic_items.Junction];
 
     layers_for(item: schematic_items.Junction) {
@@ -223,14 +255,14 @@ class JunctionPainter extends ItemPainter {
     }
 
     paint(layer: ViewLayer, j: schematic_items.Junction) {
-        const color = this.gfx.theme["junction"] as Color;
+        const color = this.theme.junction;
         this.gfx.circle(
             new Circle(j.at.position, (j.diameter || 1) / 2, color),
         );
     }
 }
 
-class NoConnectPainter extends ItemPainter {
+class NoConnectPainter extends SchematicItemPainter {
     classes = [schematic_items.NoConnect];
 
     layers_for(item: schematic_items.NoConnect) {
@@ -238,7 +270,7 @@ class NoConnectPainter extends ItemPainter {
     }
 
     paint(layer: ViewLayer, nc: schematic_items.NoConnect): void {
-        const color = this.gfx.theme["no_connect"] as Color;
+        const color = this.theme.no_connect;
         const width = schematic_items.DefaultValues.line_width;
         const size = schematic_items.DefaultValues.noconnect_size / 2;
 
@@ -268,7 +300,7 @@ class NoConnectPainter extends ItemPainter {
     }
 }
 
-class TextPainter extends ItemPainter {
+class TextPainter extends SchematicItemPainter {
     classes = [schematic_items.Text];
 
     layers_for(item: schematic_items.Text) {
@@ -280,12 +312,12 @@ class TextPainter extends ItemPainter {
             return;
         }
 
-        const schtext = new SchText(t.text);
+        const schtext = new SchText(t.shown_text);
 
-        schtext.apply_effects(t.effects);
         schtext.apply_at(t.at);
+        schtext.apply_effects(t.effects);
 
-        schtext.attributes.color = this.gfx.theme["notes"] as Color;
+        schtext.attributes.color = this.dim_if_needed(this.theme.note);
 
         this.gfx.state.push();
         StrokeFont.default().draw(
@@ -298,154 +330,7 @@ class TextPainter extends ItemPainter {
     }
 }
 
-class LibSymbolPainter extends ItemPainter {
-    classes = [schematic_items.LibSymbol];
-
-    layers_for(item: schematic_items.LibSymbol) {
-        return [
-            LayerNames.symbol_foreground,
-            LayerNames.symbol_foreground,
-            LayerNames.symbol_field,
-        ];
-    }
-
-    paint(layer: ViewLayer, s: schematic_items.LibSymbol) {
-        if (
-            ![
-                LayerNames.symbol_background,
-                LayerNames.symbol_foreground,
-                LayerNames.interactive,
-            ].includes(layer.name as LayerNames)
-        ) {
-            return;
-        }
-
-        // Unit 0 has graphic common to all units. See LIB_SYMBOL::GetPins and
-        // LIB_ITEM::m_unit.
-        const common_unit = s.units.get(0);
-        if (common_unit) {
-            this.#paint_unit(layer, common_unit);
-        }
-
-        const si = (this.view_painter as SchematicPainter).current_symbol;
-
-        const symbol_unit = s.units.get(si?.unit || 1);
-
-        if (symbol_unit) {
-            this.#paint_unit(layer, symbol_unit);
-        }
-    }
-
-    #paint_unit(layer: ViewLayer, unit: schematic_items.LibSymbol[]) {
-        const outline_color = this.gfx.theme["component_outline"] as Color;
-        const fill_color = this.gfx.theme["component_body"] as Color;
-
-        for (const sym of unit) {
-            for (const g of sym.drawings) {
-                if (g instanceof schematic_items.GraphicItem) {
-                    if (
-                        layer.name == LayerNames.symbol_background &&
-                        g.fill?.type == "background"
-                    ) {
-                        this.gfx.state.fill = fill_color;
-                    } else if (
-                        layer.name == LayerNames.symbol_foreground &&
-                        g.fill?.type == "outline"
-                    ) {
-                        this.gfx.state.fill = outline_color;
-                    } else {
-                        this.gfx.state.fill = Color.transparent_black;
-                    }
-                }
-
-                this.gfx.state.stroke = outline_color;
-
-                this.view_painter.paint_item(layer, g);
-            }
-        }
-    }
-}
-
-type SymbolTransform = {
-    matrix: Matrix3;
-    position: Vec2;
-    rotations: number;
-    mirror_x: boolean;
-    mirror_y: boolean;
-};
-
-/**
- * Determines the symbol position, orientation, and mirroring
- *
- * This is based on SCH_PAINTER::orientSymbol, where KiCAD does some fun logic
- * to place a symbol instance. This tries to replicate that.
- */
-function get_symbol_transform(
-    symbol: schematic_items.SchematicSymbol,
-): SymbolTransform {
-    // Note: KiCAD uses a 2x2 transformation matrix for symbol orientation. It's
-    // literally the only place that uses this wacky matrix. We approximate it
-    // with carefully crafted Matrix3s. KiCAD's symbol matrix is defined as
-    //      [x1, x2]
-    //      [y1, y2]
-    // which cooresponds to a Matrix3 of
-    //      [x1, x2, 0]
-    //      [x1, y2, 0]
-    //      [0,   0, 1]
-    const zero_deg_matrix = new Matrix3([1, 0, 0, 0, -1, 0, 0, 0, 1]); // [1, 0, 0, -1]
-    const ninety_deg_matrix = new Matrix3([0, -1, 0, -1, 0, 0, 0, 0, 1]); // [0, -1, -1, 0]
-    const one_eighty_deg_matrix = new Matrix3([-1, 0, 0, 0, 1, 0, 0, 0, 1]); // [-1, 0, 0, 1]
-    const two_seventy_deg_matrix = new Matrix3([0, 1, 0, 1, 0, 0, 0, 0, 1]); // [0, 1, 1, 0]
-    let rotations = 0;
-
-    let matrix = zero_deg_matrix;
-    if (symbol.at.rotation == 0) {
-        // leave matrix as is
-    } else if (symbol.at.rotation == 90) {
-        rotations = 1;
-        matrix = ninety_deg_matrix;
-    } else if (symbol.at.rotation == 180) {
-        rotations = 2;
-        matrix = one_eighty_deg_matrix;
-    } else if (symbol.at.rotation == 270) {
-        rotations = 3;
-        matrix = two_seventy_deg_matrix;
-    } else {
-        throw new Error(`unexpected rotation ${symbol.at.rotation}`);
-    }
-
-    if (symbol.mirror == "y") {
-        // * [-1, 0, 0, 1]
-        const x1 = matrix.elements[0]! * -1;
-        const y1 = matrix.elements[3]! * -1;
-        const x2 = matrix.elements[1]!;
-        const y2 = matrix.elements[4]!;
-        matrix.elements[0] = x1;
-        matrix.elements[1] = x2;
-        matrix.elements[3] = y1;
-        matrix.elements[4] = y2;
-    } else if (symbol.mirror == "x") {
-        // * [1, 0, 0, -1]
-        const x1 = matrix.elements[0]!;
-        const y1 = matrix.elements[3]!;
-        const x2 = matrix.elements[1]! * -1;
-        const y2 = matrix.elements[4]! * -1;
-        matrix.elements[0] = x1;
-        matrix.elements[1] = x2;
-        matrix.elements[3] = y1;
-        matrix.elements[4] = y2;
-    }
-
-    return {
-        matrix: matrix,
-        position: symbol.at.position,
-        rotations: rotations,
-        mirror_x: symbol.mirror == "x",
-        mirror_y: symbol.mirror == "y",
-    };
-}
-
-class PropertyPainter extends ItemPainter {
+class PropertyPainter extends SchematicItemPainter {
     classes = [schematic_items.Property];
 
     layers_for(item: schematic_items.Property) {
@@ -457,30 +342,32 @@ class PropertyPainter extends ItemPainter {
             return;
         }
 
-        let color = this.gfx.theme["fields"] as Color;
+        let color = this.theme.fields;
         if (p.parent instanceof schematic_items.SchematicSheet) {
-            color = this.gfx.theme["sheet_fields"] as Color;
+            color = this.theme.sheet_fields;
         }
 
         switch (p.name) {
             case "Reference":
-                color = this.gfx.theme["reference"] as Color;
+                color = this.theme.reference;
                 break;
             case "Value":
-                color = this.gfx.theme["value"] as Color;
+                color = this.theme.value;
                 break;
             case "Sheet name":
-                color = this.gfx.theme["sheet_name"] as Color;
+                color = this.theme.sheet_name;
                 break;
             case "Sheet file":
-                color = this.gfx.theme["sheet_filename"] as Color;
+                color = this.theme.sheet_filename;
                 break;
         }
 
-        const parent = p.parent as schematic_items.SchematicSymbol;
-        const transform = get_symbol_transform(parent);
+        color = this.dim_if_needed(color);
 
-        let text = p.text;
+        const parent = p.parent as schematic_items.SchematicSymbol;
+        const transform = this.view_painter.current_symbol_transform!;
+
+        let text = p.shown_text;
 
         if (p.name == "Reference" && parent.unit) {
             text += parent.unit_suffix;
@@ -543,7 +430,7 @@ class PropertyPainter extends ItemPainter {
     }
 }
 
-class LibTextPainter extends ItemPainter {
+class LibTextPainter extends SchematicItemPainter {
     classes = [schematic_items.LibText];
 
     layers_for(item: schematic_items.LibText) {
@@ -555,16 +442,18 @@ class LibTextPainter extends ItemPainter {
             return;
         }
 
-        const current_symbol_transform = (this.view_painter as SchematicPainter)
-            .current_symbol_transform!;
+        const current_symbol_transform =
+            this.view_painter.current_symbol_transform!;
 
-        const libtext = new LibText(lt.text);
+        const libtext = new LibText(lt.shown_text);
 
         libtext.apply_effects(lt.effects);
         libtext.apply_at(lt.at);
         libtext.apply_symbol_transformations(current_symbol_transform);
 
-        libtext.attributes.color = this.gfx.theme["foreground"] as Color;
+        libtext.attributes.color = this.dim_if_needed(
+            this.theme.component_outline,
+        );
 
         // This gets the absolute world coordinates where the text should
         // be drawn.
@@ -610,68 +499,7 @@ class LibTextPainter extends ItemPainter {
     }
 }
 
-class SchematicSymbolPainter extends ItemPainter {
-    classes = [schematic_items.SchematicSymbol];
-
-    layers_for(item: schematic_items.SchematicSymbol) {
-        return [
-            LayerNames.interactive,
-            LayerNames.symbol_foreground,
-            LayerNames.symbol_background,
-            LayerNames.symbol_field,
-            LayerNames.symbol_pin,
-        ];
-    }
-
-    paint(layer: ViewLayer, si: schematic_items.SchematicSymbol) {
-        if (layer.name == LayerNames.interactive && si.lib_symbol.power) {
-            // Don't draw power symbols on the interactive layer.
-            return;
-        }
-
-        const transform = get_symbol_transform(si);
-
-        (this.view_painter as SchematicPainter).current_symbol = si;
-        (this.view_painter as SchematicPainter).current_symbol_transform =
-            transform;
-
-        this.gfx.state.push();
-        this.gfx.state.matrix = Matrix3.translation(
-            si.at.position.x,
-            si.at.position.y,
-        );
-        this.gfx.state.multiply(transform.matrix);
-
-        this.view_painter.paint_item(layer, si.lib_symbol);
-
-        this.gfx.state.pop();
-
-        if (
-            [
-                LayerNames.symbol_pin,
-                LayerNames.symbol_foreground,
-                LayerNames.interactive,
-            ].includes(layer.name as LayerNames)
-        ) {
-            for (const pin of si.unit_pins) {
-                this.view_painter.paint_item(layer, pin);
-            }
-        }
-
-        if (
-            layer.name == LayerNames.symbol_field ||
-            layer.name == LayerNames.interactive
-        ) {
-            for (const [_, p] of si.properties) {
-                this.view_painter.paint_item(layer, p);
-            }
-        }
-
-        (this.view_painter as SchematicPainter).current_symbol = undefined;
-    }
-}
-
-class SchematicSheetPainter extends ItemPainter {
+class SchematicSheetPainter extends SchematicItemPainter {
     classes = [schematic_items.SchematicSheet];
 
     layers_for(item: schematic_items.SchematicSheet) {
@@ -685,8 +513,8 @@ class SchematicSheetPainter extends ItemPainter {
     }
 
     paint(layer: ViewLayer, ss: schematic_items.SchematicSheet) {
-        const outline_color = this.gfx.theme["sheet"] as Color;
-        const fill_color = this.gfx.theme["sheet_background"] as Color;
+        const outline_color = this.theme.sheet;
+        const fill_color = this.theme.sheet_background;
         const bbox = new BBox(
             ss.at.position.x,
             ss.at.position.y,
@@ -753,9 +581,11 @@ class SchematicSheetPainter extends ItemPainter {
     }
 }
 
-export class SchematicPainter extends DocumentPainter {
-    constructor(gfx: Renderer, layers: LayerSet) {
-        super(gfx, layers);
+export class SchematicPainter extends BaseSchematicPainter {
+    override theme: SchematicTheme;
+
+    constructor(gfx: Renderer, layers: LayerSet, theme: SchematicTheme) {
+        super(gfx, layers, theme);
         this.painter_list = [
             new RectanglePainter(this, gfx),
             new PolylinePainter(this, gfx),
@@ -778,7 +608,4 @@ export class SchematicPainter extends DocumentPainter {
             new SchematicSheetPainter(this, gfx),
         ];
     }
-
-    current_symbol?: schematic_items.SchematicSymbol;
-    current_symbol_transform?: SymbolTransform;
 }

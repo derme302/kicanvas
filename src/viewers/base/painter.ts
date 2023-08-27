@@ -6,6 +6,7 @@
 
 import * as log from "../../base/log";
 import { Renderer } from "../../graphics";
+import type { BaseTheme } from "../../kicad";
 import { ViewLayer, ViewLayerSet } from "./view-layers";
 
 /**
@@ -24,7 +25,11 @@ export abstract class ItemPainter {
 
     abstract layers_for(item: unknown): string[];
 
-    abstract paint(layer: ViewLayer, item: unknown): void;
+    abstract paint(layer: ViewLayer, item: unknown, ...rest: any[]): void;
+
+    public get theme(): BaseTheme {
+        return this.view_painter.theme;
+    }
 }
 
 export interface PaintableDocument {
@@ -40,7 +45,11 @@ export class DocumentPainter {
     /**
      * Create a ViewPainter.
      */
-    constructor(protected gfx: Renderer, protected layers: ViewLayerSet) {}
+    constructor(
+        public gfx: Renderer,
+        public layers: ViewLayerSet,
+        public theme: BaseTheme,
+    ) {}
 
     protected set painter_list(painters: ItemPainter[]) {
         for (const painter of painters) {
@@ -104,9 +113,9 @@ export class DocumentPainter {
         layer.bboxes = bboxes;
     }
 
-    paint_item(layer: ViewLayer, item: unknown) {
+    paint_item(layer: ViewLayer, item: unknown, ...rest: any[]) {
         const painter = this.painter_for(item);
-        painter?.paint(layer, item);
+        painter?.paint(layer, item, ...rest);
     }
 
     painter_for(item: any): ItemPainter | undefined {

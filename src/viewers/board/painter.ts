@@ -19,14 +19,22 @@ import { DocumentPainter, ItemPainter } from "../base/painter";
 import { ViewLayerNames } from "../base/view-layers";
 import {
     CopperVirtualLayerNames,
+    CopperLayerNames,
     LayerNames,
     LayerSet,
     ViewLayer,
     copper_layers_between,
     virtual_layer_for,
 } from "./layers";
+import type { BoardTheme } from "../../kicad";
 
 abstract class BoardItemPainter extends ItemPainter {
+    override view_painter: BoardPainter;
+
+    override get theme(): BoardTheme {
+        return this.view_painter.theme;
+    }
+
     /** Alias for BoardPainter.filter_net */
     get filter_net(): number | null {
         return (this.view_painter as BoardPainter).filter_net;
@@ -261,9 +269,19 @@ class ZonePainter extends BoardItemPainter {
 
     layers_for(z: board_items.Zone): string[] {
         const layers = z.layers ?? [z.layer];
-        return layers.map((l) =>
-            virtual_layer_for(l, CopperVirtualLayerNames.zones),
-        );
+
+        if (layers.length && layers[0] == "F&B.Cu") {
+            layers.shift();
+            layers.push("F.Cu", "B.Cu");
+        }
+
+        return layers.map((l) => {
+            if (CopperLayerNames.includes(l as LayerNames)) {
+                return virtual_layer_for(l, CopperVirtualLayerNames.zones);
+            } else {
+                return l;
+            }
+        });
     }
 
     paint(layer: ViewLayer, z: board_items.Zone) {
@@ -320,7 +338,7 @@ class PadPainter extends BoardItemPainter {
                 layers.push(LayerNames.pad_holes);
                 break;
             case "np_thru_hole":
-                layers.push(LayerNames.pad_holes);
+                layers.push(LayerNames.non_plated_holes);
                 break;
             case "smd":
             case "connect":
@@ -352,7 +370,11 @@ class PadPainter extends BoardItemPainter {
 
         const center = new Vec2(0, 0);
 
-        if (layer.name == LayerNames.pad_holes && pad.drill != null) {
+        const is_hole_layer =
+            layer.name == LayerNames.pad_holes ||
+            layer.name == LayerNames.non_plated_holes;
+
+        if (is_hole_layer && pad.drill != null) {
             if (!pad.drill.oval) {
                 const drill_pos = center.add(pad.drill.offset);
                 this.gfx.circle(
@@ -387,6 +409,13 @@ class PadPainter extends BoardItemPainter {
             let shape = pad.shape;
             if (shape == "custom" && pad.options?.anchor) {
                 shape = pad.options.anchor;
+            }
+
+            if (pad.drill?.offset) {
+                this.gfx.state.matrix.translate_self(
+                    pad.drill.offset.x,
+                    pad.drill.offset.y,
+                );
             }
 
             switch (shape) {
@@ -933,11 +962,10 @@ class FootprintPainter extends BoardItemPainter {
 }
 
 export class BoardPainter extends DocumentPainter {
-    /**
-     * Create a Painter
-     */
-    constructor(gfx: Renderer, layers: LayerSet) {
-        super(gfx, layers);
+    override theme: BoardTheme;
+
+    constructor(gfx: Renderer, layers: LayerSet, theme: BoardTheme) {
+        super(gfx, layers, theme);
         this.painter_list = [
             new LinePainter(this, gfx),
             new RectPainter(this, gfx),

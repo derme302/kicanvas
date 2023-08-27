@@ -6,7 +6,7 @@
 
 import { Color } from "../../base/color";
 import { is_string } from "../../base/types";
-import { KicadPCB } from "../../kicad";
+import { KicadPCB, type BoardTheme } from "../../kicad";
 import {
     ViewLayerNames as BaseLayerNames,
     ViewLayerSet as BaseLayerSet,
@@ -38,6 +38,7 @@ export enum LayerNames {
     user_8 = "User.8",
     user_9 = "User.9",
     anchors = ":Anchors",
+    non_plated_holes = ":NonPlatedHoles",
     via_holes = ":Via:Holes",
     pad_holes = ":Pad:Holes",
     pad_holewalls = ":Pad:HoleWalls",
@@ -92,14 +93,15 @@ export enum LayerNames {
     grid = BaseLayerNames.grid,
 }
 
-const HoleLayerNames = [
+export const HoleLayerNames = [
+    LayerNames.non_plated_holes,
     LayerNames.via_holes,
     LayerNames.pad_holes,
     LayerNames.pad_holewalls,
     LayerNames.via_holewalls,
 ];
 
-const CopperLayerNames = [
+export const CopperLayerNames = [
     LayerNames.f_cu,
     LayerNames.in1_cu,
     LayerNames.in2_cu,
@@ -186,15 +188,11 @@ export class LayerSet extends BaseLayerSet {
     /**
      * Create a new LayerSet
      */
-    constructor(
-        board: KicadPCB,
-        public theme: Record<string, Color | Record<string, Color>>,
-    ) {
+    constructor(board: KicadPCB, public theme: BoardTheme) {
         super();
 
-        this.theme = theme;
-
         const board_layers = new Map();
+
         for (const l of board.layers) {
             board_layers.set(l.canonical_name, l);
         }
@@ -298,6 +296,8 @@ export class LayerSet extends BaseLayerSet {
                     (this.theme["copper"] as Record<string, Color>)?.["b"] ??
                     Color.white
                 );
+            case LayerNames.non_plated_holes:
+                return (this.theme["non_plated_hole"] as Color) ?? Color.white;
             case LayerNames.via_holes:
                 return (this.theme["via_hole"] as Color) ?? Color.white;
             case LayerNames.via_holewalls:
@@ -314,13 +314,15 @@ export class LayerSet extends BaseLayerSet {
 
         if (name.endsWith("_cu")) {
             name = name.replace("_cu", "");
+            const copper_theme = this.theme.copper;
             return (
-                (this.theme["copper"] as Record<string, Color>)?.[name] ??
-                Color.white
+                copper_theme[name as keyof typeof copper_theme] ?? Color.white
             );
         }
 
-        return (this.theme[name] as Color) ?? Color.white;
+        type KeyType = keyof Omit<BoardTheme, "copper">;
+
+        return this.theme[name as KeyType] ?? Color.white;
     }
 
     /**
