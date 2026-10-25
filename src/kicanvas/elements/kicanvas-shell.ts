@@ -13,6 +13,7 @@ import { sprites_url } from "../icons/sprites";
 import { Project } from "../project";
 import { GitHubFileSystem } from "../services/github-vfs";
 import { CodebergFileSystem } from "../services/codeberg-vfs";
+import { GitLabFileSystem } from "../services/gitlab-vfs";
 import { FetchFileSystem, type IFileSystem } from "../services/vfs";
 import { KCBoardAppElement } from "./kc-board/app";
 import { KCSchematicAppElement } from "./kc-schematic/app";
@@ -85,6 +86,7 @@ class KiCanvasShellElement extends KCUIElement {
 
         const urls = [
             ...url_params.getAll("github"),
+            ...url_params.getAll("gitlab"),
             ...url_params.getAll("repo"),
         ];
 
@@ -140,7 +142,8 @@ class KiCanvasShellElement extends KCUIElement {
     private async load_repo(url: string): Promise<IFileSystem | null> {
         return (
             (await GitHubFileSystem.fromURLs(url)) ??
-            (await CodebergFileSystem.fromURLs(url))
+            (await CodebergFileSystem.fromURLs(url)) ??
+            (await GitLabFileSystem.fromURLs(url))
         );
     }
 
@@ -196,7 +199,7 @@ class KiCanvasShellElement extends KCUIElement {
                     <input
                         name="link"
                         type="text"
-                        placeholder="Paste a GitHub/Codeberg link..."
+                        placeholder="Paste a GitHub/GitLab/Codeberg link..."
                         autofocus />
                     <p>
                         or drag & drop your KiCad files, or<button
