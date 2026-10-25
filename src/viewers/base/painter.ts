@@ -4,13 +4,17 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import * as log from "../../base/log";
+import { Logger } from "../../base/log";
+import type { Vec2 } from "../../base/math";
 import { Renderer } from "../../graphics";
 import type { BaseTheme } from "../../kicad";
+import { StrokeParams } from "../../kicad/common";
 import { ViewLayer, ViewLayerSet } from "./view-layers";
 
+const log = new Logger("kicanvas:project");
+
 /**
- * Base class for all painters responsible for drawing a view items.
+ * Base class for all painters responsible for drawing view items.
  */
 export abstract class ItemPainter {
     /**
@@ -37,7 +41,7 @@ export interface PaintableDocument {
 }
 
 /**
- * Base class for painting a complete document, for example, an entire schematic or board.
+ * Base class for painting a complete document, for example an entire schematic or board.
  */
 export class DocumentPainter {
     #painters: Map<unknown, ItemPainter> = new Map();
@@ -64,9 +68,9 @@ export class DocumentPainter {
     }
 
     paint(document: PaintableDocument) {
-        log.start("Painting");
+        log.debug("Painting");
 
-        log.message("Sorting paintable items into layers");
+        log.debug("Sorting paintable items into layers");
 
         for (const item of document.items()) {
             const painter = this.painter_for(item);
@@ -82,13 +86,13 @@ export class DocumentPainter {
         }
 
         for (const layer of this.paintable_layers()) {
-            log.message(
+            log.debug(
                 `Painting layer ${layer.name} with ${layer.items.length} items`,
             );
             this.paint_layer(layer);
         }
 
-        log.finish();
+        log.debug("Painting complete");
     }
 
     *paintable_layers() {
@@ -124,5 +128,107 @@ export class DocumentPainter {
 
     layers_for(item: any): string[] {
         return this.painters.get(item.constructor)?.layers_for(item) || [];
+    }
+}
+
+/**
+ * Stroke painter (solid, dash, etc.)
+ */
+export class StrokePainter {
+    static line(
+        lines: Vec2[],
+        width: number,
+        stroke_style: StrokeParams,
+        draw_line: (lines: Vec2[]) => void,
+    ) {
+        // reference implementation:
+        // https://gitlab.com/kicad/code/kicad/-/blob/master/common/stroke_params.cpp#L48
+        // https://gitlab.com/kicad/code/develop/-/blob/master/pcbnew/pcb_painter.cpp#L2236
+
+        const stroke_type = stroke_style.stroke;
+
+        // solid line
+        if (stroke_type.type === "solid" || stroke_type.type === "default") {
+            draw_line(lines);
+            return;
+        }
+
+        // dot, dash, dash_dot, dash_dot_dot
+        for (const [start, end] of StrokePainter.windowed2_iter(lines)) {
+            this.line_helper(start, end!, width, stroke_style, draw_line);
+        }
+    }
+
+    private static line_helper(
+        start: Vec2,
+        end: Vec2,
+        width: number,
+        stroke_style: StrokeParams,
+        draw_line: (lines: Vec2[]) => void,
+    ) {
+        const line_vec = end.sub(start);
+        const line_len = line_vec.magnitude;
+        const line_dir_vec = line_vec.normalize();
+
+        const dot_len = StrokeParams.dot_length(width);
+        const gap_len = StrokeParams.gap_length(width, stroke_style);
+        const dash_len = StrokeParams.dash_length(width, stroke_style);
+
+        // Generate line pattern
+        let line_pattern: number[] = [];
+        switch (stroke_style.stroke.type) {
+            case "dash":
+                line_pattern = [dash_len, gap_len];
+                break;
+            case "dot":
+                line_pattern = [dot_len, gap_len];
+                break;
+            case "dash_dot":
+                line_pattern = [dash_len, gap_len, dot_len, gap_len];
+                break;
+            case "dash_dot_dot":
+                line_pattern = [
+                    dash_len,
+                    gap_len,
+                    dot_len,
+                    gap_len,
+                    dot_len,
+                    gap_len,
+                ];
+                break;
+            default:
+                // Unreachable
+                return;
+        }
+
+        // Draw lines
+        let draw_len = 0.0;
+        let pattern_index = 0;
+        while (draw_len < line_len) {
+            const pattern = line_pattern[pattern_index]!;
+
+            const segment_len = Math.min(pattern, line_len - draw_len);
+
+            if (pattern_index % 2 === 0 && segment_len > 0) {
+                const seg_start = start.add(line_dir_vec.multiply(draw_len));
+                const seg_end = seg_start.add(
+                    line_dir_vec.multiply(segment_len),
+                );
+
+                draw_line([seg_start, seg_end]);
+            }
+
+            draw_len += segment_len;
+            pattern_index = (pattern_index + 1) % line_pattern.length;
+        }
+    }
+
+    /** [1, 2, 3, 4, 5] -> [(1, 2), (2, 3), (3, 4), (4, 5), ...] */
+    private static *windowed2_iter<T>(
+        items: T[],
+    ): Generator<[T, T | undefined]> {
+        for (let i = 0; i < items.length - 1; i++) {
+            yield [items[i]!, items[i + 1]!];
+        }
     }
 }

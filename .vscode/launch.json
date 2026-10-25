@@ -8,9 +8,16 @@
             "type": "chrome",
             "request": "launch",
             "name": "Launch Chrome against localhost",
-            "url": "http://localhost:8000/schematic.html",
+            "preLaunchTask": "npm: serve",
+            "url": "http://localhost:8001/",
             "webRoot": "${workspaceFolder}/www",
-            //"preLaunchTask": "${defaultBuildTask}",
+            "sourceMapPathOverrides": {
+                "..": "${workspaceFolder}/www/*"
+            },
+            "outFiles": [
+                "${workspaceFolder}/www/kicanvas/*.js",
+                "!**/node_modules/**"
+            ],
             "skipFiles": [
                 "<node_internals>/**",
                 "**/node_modules/**",

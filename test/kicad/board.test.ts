@@ -4,7 +4,7 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { assert } from "@esm-bundle/chai";
+import { assert } from "chai";
 import * as board from "../../src/kicad/board";
 import * as common from "../../src/kicad/common";
 
@@ -13,12 +13,16 @@ import properties_pcb_src from "./files/properties.kicad_pcb";
 import paper_pcb_src from "./files/paper.kicad_pcb";
 import shapes_pcb_src from "./files/shapes.kicad_pcb";
 import text_pcb_src from "./files/text.kicad_pcb";
+import text_locked_pcb_src from "./files/text-locked.kicad_pcb";
 import traces_pcb_src from "./files/traces.kicad_pcb";
 import dimensions_pcb_src from "./files/dimensions.kicad_pcb";
 import zones_pcb_src from "./files/zones.kicad_pcb";
 import vias_pcb_src from "./files/vias.kicad_pcb";
 import footprint_graphics_pcb_src from "./files/footprint-graphics.kicad_pcb";
 import footprint_pads_pcb_src from "./files/footprint-pads.kicad_pcb";
+import footprint_text_locked_pcb_src from "./files/footprint-text-locked.kicad_pcb";
+import footprint_symbol_properties_pcb_src from "./files/footprint-properties.kicad_pcb";
+import shape_polygon_arc_pcb_src from "./files/shape_polygon_arc.kicad_pcb";
 import { first } from "../../src/base/iterator";
 
 suite("kicad.board.KicadPCB(): board parsing", function () {
@@ -315,6 +319,50 @@ suite("kicad.board.KicadPCB(): board parsing", function () {
         } as any);
     });
 
+    test("with locked gr_text", function () {
+        const pcb = new board.KicadPCB(
+            "text-locked.kicad_pcb",
+            text_locked_pcb_src,
+        );
+
+        assert.equal(pcb.drawings.length, 2);
+
+        assert.include(pcb.drawings[0], {
+            text: "Text locked",
+            locked: true,
+        });
+
+        assert.include(pcb.drawings[1], {
+            text: "Text unlocked",
+            locked: false,
+        });
+    });
+
+    test("with locked fp_text", function () {
+        const pcb = new board.KicadPCB(
+            "footprint-text-locked.kicad_pcb",
+            footprint_text_locked_pcb_src,
+        );
+
+        assert.equal(pcb.footprints.length, 1);
+
+        const footprint = pcb.footprints[0]!;
+
+        assert.equal(footprint.drawings.length, 2);
+
+        assert.include(footprint.drawings[0], {
+            text: "Locked text",
+            locked: true,
+            type: "reference",
+        });
+
+        assert.include(footprint.drawings[1], {
+            text: "Unlocked text",
+            locked: false,
+            type: "value",
+        });
+    });
+
     test("with traces", function () {
         const pcb = new board.KicadPCB("test.kicad_pcb", traces_pcb_src);
 
@@ -579,6 +627,32 @@ suite("kicad.board.KicadPCB(): board parsing", function () {
             free: true,
             net: 0,
         } as Partial<board.Via>);
+    });
+
+    test("with polygon", function () {
+        const pcb = new board.KicadPCB(
+            "test.kicad_pcb",
+            shape_polygon_arc_pcb_src,
+        );
+        assert.equal(pcb.drawings.length, 1);
+
+        const poly1 = pcb.drawings[0]!;
+
+        assert(poly1 instanceof board.GrPoly);
+        assert.deepInclude(poly1, {
+            pts: [
+                {
+                    start: { x: 0, y: 0 },
+                    mid: { x: 5, y: -5 },
+                    end: { x: 1, y: 0 },
+                },
+                { x: 1, y: 1 },
+                { x: 0, y: 1 },
+            ],
+            layer: "F.Cu",
+            width: 0.2,
+            fill: "none",
+        } as Partial<board.GrPoly>);
     });
 });
 
@@ -998,5 +1072,44 @@ suite("kicad.board.Footprint()", function () {
             solder_mask_margin: 0.5,
             clearance: 0.5,
         } as Partial<board.Pad>);
+    });
+
+    test("with footprint symbol properties", function () {
+        const pcb = new board.KicadPCB(
+            "test.kicad_pcb",
+            footprint_symbol_properties_pcb_src,
+        );
+        assert.equal(pcb.footprints.length, 1);
+
+        const fp0 = pcb.footprints[0]!;
+
+        assert.isDefined(fp0.properties["Reference"]);
+        const ref_prop = fp0.properties["Reference"]!;
+
+        assert.deepInclude(ref_prop, {
+            has_symbol_prop: true,
+            value: "C1",
+            id: 0,
+            unlocked: false,
+            hide: false,
+            at: { position: { x: 0, y: -1.43 }, rotation: 0, unlocked: false },
+            layer: "F.SilkS",
+            effects: {
+                font: {
+                    face: undefined,
+                    size: { x: 1, y: 1 },
+                    thickness: 0.15,
+                    italic: false,
+                    bold: false,
+                    color: { r: 0, g: 0, b: 0, a: 0 },
+                },
+                justify: {
+                    horizontal: "center",
+                    vertical: "center",
+                    mirror: false,
+                },
+                hide: false,
+            },
+        } as Partial<board.SymbolProperty>);
     });
 });

@@ -4,7 +4,7 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { assert } from "@esm-bundle/chai";
+import { assert } from "chai";
 
 import { Vec2 } from "../../src/base/math";
 import { EDAText } from "../../src/kicad/text";
@@ -21,7 +21,7 @@ class EDATextImpl extends EDAText {
 
 suite("text.EDAText()", function () {
     test(".get_text_box() simple case", function () {
-        // Known reference values taken from KiCAD debugging.
+        // Known reference values taken from KiCad debugging.
         const text = new EDATextImpl("hello");
 
         text.text_pos = new Vec2(914400, 1066800);
@@ -46,7 +46,7 @@ suite("text.EDAText()", function () {
     });
 
     test(".get_text_box() multiline case", function () {
-        // Known reference values taken from KiCAD debugging.
+        // Known reference values taken from KiCad debugging.
 
         const text = new EDATextImpl("hello\nworld");
 

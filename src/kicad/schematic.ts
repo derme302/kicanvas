@@ -7,13 +7,18 @@
 import { Color } from "../base/color";
 import * as log from "../base/log";
 import { Arc as MathArc, Vec2 } from "../base/math";
+import type { Project } from "../kicanvas/project";
 import {
     At,
     Effects,
     Paper,
     Stroke,
     TitleBlock,
+    EmbeddedFile,
     expand_text_vars,
+    unescape_string,
+    type HasStrokeParams,
+    StrokeParams,
 } from "./common";
 import { P, T, parse_expr, type Parseable } from "./parser";
 
@@ -53,9 +58,13 @@ export const DefaultValues = {
     pin_name_offset: 0.508, // 20 mils
 };
 
+export type SchematicDrawing = Polyline | Text | Circle | Image;
+
 export class KicadSch {
+    project?: Project;
     version: number;
     generator?: string;
+    generator_version?: string;
     uuid: string;
     paper?: Paper;
     title_block = new TitleBlock();
@@ -70,13 +79,20 @@ export class KicadSch {
     hierarchical_labels: HierarchicalLabel[] = [];
     symbols = new Map<string, SchematicSymbol>();
     no_connects: NoConnect[] = [];
-    drawings: (Polyline | Text)[] = [];
+    drawings: SchematicDrawing[] = [];
+    rule_areas: RuleArea[] = [];
+    netclass_flags: DirectiveLabel[] = [];
     images: Image[] = [];
     sheet_instances?: SheetInstances;
     symbol_instances?: SymbolInstances;
     sheets: SchematicSheet[] = [];
+    embedded_fonts: boolean = false;
+    embedded_files: EmbeddedFile[] = [];
 
-    constructor(public filename: string, expr: Parseable) {
+    constructor(
+        public filename: string,
+        expr: Parseable,
+    ) {
         Object.assign(
             this,
             parse_expr(
@@ -84,6 +100,7 @@ export class KicadSch {
                 P.start("kicad_sch"),
                 P.pair("version", T.number),
                 P.pair("generator", T.string),
+                P.pair("generator_version", T.string),
                 P.pair("uuid", T.string),
                 P.item("paper", Paper),
                 P.item("title_block", TitleBlock),
@@ -105,7 +122,6 @@ export class KicadSch {
                     "hierarchical_label",
                     T.item(HierarchicalLabel, this),
                 ),
-                // images
                 P.mapped_collection(
                     "symbols",
                     "symbol",
@@ -116,10 +132,19 @@ export class KicadSch {
                 P.collection("drawings", "rectangle", T.item(Rectangle, this)),
                 P.collection("drawings", "arc", T.item(Arc, this)),
                 P.collection("drawings", "text", T.item(Text, this)),
+                P.collection("drawings", "circle", T.item(Circle, this)),
+                P.collection("rule_areas", "rule_area", T.item(RuleArea, this)),
+                P.collection(
+                    "netclass_flags",
+                    "netclass_flag",
+                    T.item(DirectiveLabel, this),
+                ),
                 P.collection("images", "image", T.item(Image)),
                 P.item("sheet_instances", SheetInstances),
                 P.item("symbol_instances", SymbolInstances),
                 P.collection("sheets", "sheet", T.item(SchematicSheet, this)),
+                P.pair("embedded_fonts", T.boolean),
+                P.list("embedded_files", T.item(EmbeddedFile)),
             ),
         );
 
@@ -132,11 +157,16 @@ export class KicadSch {
         // See SCH_SHEET_LIST::UpdateSymbolInstanceData
         path ??= ``;
 
-        const global_symbol_instances = this.symbol_instances?.symbol_instances;
+        const root_symbol_instances = (
+            this.project?.root_schematic_page?.document as KicadSch
+        )?.symbol_instances;
+        const global_symbol_instances = this.symbol_instances;
 
         for (const s of this.symbols.values()) {
+            const symbol_path = `${path}/${s.uuid}`;
             const instance_data =
-                global_symbol_instances?.get(`${path}/${s.uuid}`) ??
+                root_symbol_instances?.get(symbol_path) ??
+                global_symbol_instances?.get(symbol_path) ??
                 s.instances.get(path);
 
             if (!instance_data) {
@@ -150,11 +180,16 @@ export class KicadSch {
         }
 
         // See SCH_SHEET_LIST::UpdateSheetInstanceData
-        const global_sheet_instances = this.sheet_instances?.sheet_instances;
+        const root_sheet_instances = (
+            this.project?.root_schematic_page?.document as KicadSch
+        )?.sheet_instances;
+        const global_sheet_instances = this.sheet_instances;
 
         for (const s of this.sheets) {
+            const sheet_path = `${path}/${s.uuid}`;
             const instance_data =
-                global_sheet_instances?.get(`${path}/${s.uuid}`) ??
+                root_sheet_instances?.get(sheet_path) ??
+                global_sheet_instances?.get(sheet_path) ??
                 s.instances.get(path);
 
             if (!instance_data) {
@@ -180,17 +215,19 @@ export class KicadSch {
         yield* this.junctions;
         yield* this.net_labels;
         yield* this.global_labels;
+        yield* this.netclass_flags;
         yield* this.hierarchical_labels;
         yield* this.no_connects;
         yield* this.symbols.values();
         yield* this.drawings;
+        yield* this.rule_areas;
         yield* this.images;
         yield* this.sheets;
     }
 
     find_symbol(uuid_or_ref: string) {
         if (this.symbols.has(uuid_or_ref)) {
-            return this.symbols.get(this.uuid)!;
+            return this.symbols.get(uuid_or_ref)!;
         }
         for (const sym of this.symbols.values()) {
             if (sym.uuid == uuid_or_ref || sym.reference == uuid_or_ref) {
@@ -246,7 +283,7 @@ export class Fill {
     }
 }
 
-export class GraphicItem {
+export class GraphicItem implements HasStrokeParams {
     parent?: LibSymbol | SchematicSymbol;
     private = false;
     stroke?: Stroke;
@@ -255,6 +292,16 @@ export class GraphicItem {
 
     constructor(parent?: LibSymbol | SchematicSymbol) {
         this.parent = parent;
+    }
+
+    get stroke_params(): StrokeParams {
+        // TODO
+        // get StrokeParams from project settings
+        return {
+            stroke: this.stroke ?? Stroke.default_value(),
+            dashed_line_gap_ratio: 3,
+            dashed_line_dash_ratio: 12,
+        };
     }
 
     static common_expr_defs = [
@@ -455,7 +502,7 @@ export class Bezier extends GraphicItem {
     pts: Vec2[];
 
     constructor(expr: Parseable, parent?: LibSymbol | SchematicSymbol) {
-        /* TODO: this was added in KiCAD 7 */
+        /* TODO: this was added in KiCad 7 */
         super(parent);
         Object.assign(
             this,
@@ -638,7 +685,7 @@ export class TextBox extends GraphicItem {
     effects = new Effects();
 
     constructor(expr: Parseable, parent?: LibSymbol | SchematicSymbol) {
-        /* TODO: This was added in KiCAD 7 */
+        /* TODO: This was added in KiCad 7 */
         super(parent);
         Object.assign(
             this,
@@ -670,6 +717,10 @@ export class Label {
         P.atom("fields_autoplaced"),
         P.pair("uuid", T.string),
     ];
+
+    get shown_text() {
+        return unescape_string(this.text);
+    }
 }
 
 export class NetLabel extends Label {
@@ -744,11 +795,41 @@ export class HierarchicalLabel extends Label {
     }
 }
 
+export class DirectiveLabel extends Label {
+    shape: LabelShapes;
+    length: number;
+
+    properties: Property[] = [];
+
+    constructor(
+        expr: Parseable,
+        public parent: SchematicSheet,
+    ) {
+        // For some reasons,
+        // kicad source code use directive label to represent "netclass_flag".
+        super();
+        Object.assign(
+            this,
+            parse_expr(
+                expr,
+                P.start("netclass_flag"),
+                ...Label.common_expr_defs,
+                P.pair("shape", T.string),
+                P.pair("length", T.number),
+                P.collection("properties", "property", T.item(Property, this)),
+            ),
+        );
+    }
+}
+
 export class LibSymbols {
     symbols: LibSymbol[] = [];
     #symbols_by_name: Map<string, LibSymbol> = new Map();
 
-    constructor(expr: Parseable, public parent: KicadSch) {
+    constructor(
+        expr: Parseable,
+        public parent: KicadSch,
+    ) {
         Object.assign(
             this,
             parse_expr(
@@ -783,16 +864,24 @@ export class LibSymbol {
     };
     in_bom = false;
     on_board = false;
+    in_pos_files = true;
+    exclude_from_sim = false;
+    duplicate_pin_numbers_are_jumpers = false;
     properties: Map<string, Property> = new Map();
     children: LibSymbol[] = [];
     drawings: Drawing[] = [];
     pins: PinDefinition[] = [];
     units: Map<number, LibSymbol[]> = new Map();
+    embedded_fonts = false;
+    embedded_files: EmbeddedFile[] = [];
 
     #pins_by_number: Map<string, PinDefinition> = new Map();
     #properties_by_id: Map<number, Property> = new Map();
 
-    constructor(expr: Parseable, public parent?: LibSymbol | KicadSch) {
+    constructor(
+        expr: Parseable,
+        public parent?: LibSymbol | KicadSch,
+    ) {
         Object.assign(
             this,
             parse_expr(
@@ -809,6 +898,9 @@ export class LibSymbol {
                 ),
                 P.pair("in_bom", T.boolean),
                 P.pair("on_board", T.boolean),
+                P.pair("in_pos_files", T.boolean),
+                P.pair("duplicate_pin_numbers_are_jumpers", T.boolean),
+                P.pair("exclude_from_sim", T.boolean),
                 P.mapped_collection(
                     "properties",
                     "property",
@@ -824,6 +916,8 @@ export class LibSymbol {
                 P.collection("drawings", "rectangle", T.item(Rectangle, this)),
                 P.collection("drawings", "text", T.item(LibText, this)),
                 P.collection("drawings", "textbox", T.item(TextBox, this)),
+                P.pair("embedded_fonts", T.boolean),
+                P.collection("embedded_files", "file", T.item(EmbeddedFile)),
             ),
         );
 
@@ -918,7 +1012,7 @@ export class LibSymbol {
     }
 
     get unit(): number {
-        // KiCAD encodes the symbol unit into the name, for example,
+        // KiCad encodes the symbol unit into the name, for example,
         // MCP6001_1_1 is unit 1 and MCP6001_2_1 is unit 2.
         // Unit 0 is common to all units.
         // See SCH_SEXPR_PARSER::ParseSymbol.
@@ -931,7 +1025,7 @@ export class LibSymbol {
     }
 
     get style(): number {
-        // KiCAD "De Morgan" body styles are indicated with a number greater
+        // KiCad "De Morgan" body styles are indicated with a number greater
         // than one at the end of the symbol name.
         // MCP6001_1_1 is the normal body and and MCP6001_1_2 is the alt style.
         // Style 0 is common to all styles.
@@ -970,6 +1064,7 @@ export class Property {
     text: string;
     id: number;
     at: At;
+    hide = false;
     show_name = false;
     do_not_autoplace = false;
     #effects?: Effects;
@@ -984,6 +1079,7 @@ export class Property {
             P.positional("name", T.string),
             P.positional("text", T.string),
             P.pair("id", T.number),
+            P.pair("hide", T.boolean),
             P.item("at", At),
             P.item("effects", Effects),
             P.atom("show_name"),
@@ -992,6 +1088,17 @@ export class Property {
 
         this.#effects = parsed["effects"];
         delete parsed["effects"];
+
+        // KiCad 10 (ver 20260306)
+        // (property "ki_fp_filters" "R_*"
+        //    (at 0 0 0)
+        //    (hide yes))
+        // KiCad 9 and 8
+        // (property "ki_keywords" "quartz ceramic resonator oscillator"
+        //   (at 0 0 0)
+        //   (effects
+        //     (hide yes)))
+        this.hide = this.hide || (this.#effects?.hide ?? false);
 
         Object.assign(this, parsed);
     }
@@ -1058,7 +1165,10 @@ export class PinDefinition {
     };
     alternates?: PinAlternate[];
 
-    constructor(expr: Parseable, public parent: LibSymbol) {
+    constructor(
+        expr: Parseable,
+        public parent: LibSymbol,
+    ) {
         /*
         (pin power_in line (at -15.24 50.8 270) (length 2.54) hide
           (name "IOVDD" (effects (font (size 1.27 1.27))))
@@ -1116,6 +1226,24 @@ export class PinAlternate {
     }
 }
 
+export class RuleArea {
+    polyline: Polyline;
+
+    constructor(
+        expr: Parseable,
+        public parent: KicadSch,
+    ) {
+        Object.assign(
+            this,
+            parse_expr(
+                expr,
+                P.start("rule_area"),
+                P.item("polyline", Polyline),
+            ),
+        );
+    }
+}
+
 export class SchematicSymbol {
     uuid: string;
     id: string;
@@ -1127,6 +1255,7 @@ export class SchematicSymbol {
     convert: number;
     in_bom = false;
     on_board = false;
+    exclude_from_sim = false;
     dnp = false;
     fields_autoplaced = false;
     properties: Map<string, Property> = new Map();
@@ -1139,10 +1268,13 @@ export class SchematicSymbol {
     };
     instances: Map<string, SchematicSymbolInstance> = new Map();
 
-    constructor(expr: Parseable, public parent: KicadSch) {
+    constructor(
+        expr: Parseable,
+        public parent: KicadSch,
+    ) {
         /*
         (symbol (lib_id "Device:C_Small") (at 134.62 185.42 0) (unit 1)
-          (in_bom yes) (on_board yes) (fields_autoplaced)
+          (in_bom yes) (on_board yes) (exclude_from_sim no) (fields_autoplaced)
           (uuid 42d20c56-7e92-459e-8ba3-25545a76a4e9)
           (property "Reference" "C311" (id 0) (at 137.16 182.8862 0)
             (effects (font (size 1.27 1.27)) (justify left)))
@@ -1164,6 +1296,7 @@ export class SchematicSymbol {
             P.pair("convert", T.number),
             P.pair("in_bom", T.boolean),
             P.pair("on_board", T.boolean),
+            P.pair("exclude_from_sim", T.boolean),
             P.pair("dnp", T.boolean),
             P.atom("fields_autoplaced"),
             P.pair("uuid", T.string),
@@ -1368,9 +1501,12 @@ export class SchematicSymbolInstance {
 export class PinInstance {
     number: string;
     uuid: string;
-    alternate: string;
+    alternate?: string;
 
-    constructor(expr: Parseable, public parent: SchematicSymbol) {
+    constructor(
+        expr: Parseable,
+        public parent: SchematicSymbol,
+    ) {
         /* (pin "1" (uuid ab9b91d4-020f-476d-acd8-920c7892e89a) (alternate abc)) */
         Object.assign(
             this,
@@ -1414,6 +1550,10 @@ export class SheetInstances {
             ),
         );
     }
+
+    get(key: string) {
+        return this.sheet_instances.get(key);
+    }
 }
 
 export class SheetInstance {
@@ -1452,6 +1592,10 @@ export class SymbolInstances {
                 ),
             ),
         );
+    }
+
+    get(key: string) {
+        return this.symbol_instances.get(key);
     }
 }
 
@@ -1494,7 +1638,10 @@ export class SchematicSheet {
     page?: string;
     path?: string;
 
-    constructor(expr: Parseable, public parent: KicadSch) {
+    constructor(
+        expr: Parseable,
+        public parent: KicadSch,
+    ) {
         const parsed = parse_expr(
             expr,
             P.start("sheet"),
@@ -1585,7 +1732,10 @@ export class SchematicSheetPin {
     effects: Effects;
     uuid: string;
 
-    constructor(expr: Parseable, public parent: SchematicSheet) {
+    constructor(
+        expr: Parseable,
+        public parent: SchematicSheet,
+    ) {
         Object.assign(
             this,
             parse_expr(

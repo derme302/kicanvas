@@ -30,14 +30,15 @@ export class KCUIButtonElement extends KCUIElement {
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                padding: 0.5rem;
+                padding: 0.5em;
                 border: 1px solid transparent;
-                border-radius: 0.25rem;
+                border-radius: 0.25em;
                 font-weight: medium;
-                font-size: 1rem;
+                font-size: 1em;
                 background: var(--button-bg);
                 color: var(--button-fg);
-                transition: color var(--transition-time-short) ease,
+                transition:
+                    color var(--transition-time-short) ease,
                     border var(--transition-time-short) ease,
                     background var(--transition-time-short) ease;
             }
@@ -105,6 +106,26 @@ export class KCUIButtonElement extends KCUIElement {
             :host([selected]) button.toolbar {
                 background: var(--button-toolbar-disabled-bg);
                 color: var(--button--toolbar-disabled-fg);
+            }
+
+            button.toolbar-alt {
+                background: var(--button-toolbar-alt-bg);
+                color: var(--button-toolbar-alt-fg);
+            }
+
+            button.toolbar-alt:hover {
+                background: var(--button-toolbar-alt-hover-bg);
+                color: var(--button-toolbar-alt-hover-fg);
+            }
+
+            button.toolbar-alt:disabled {
+                background: var(--button-toolbar-alt-disabled-bg);
+                color: var(--button-toolbar-alt-disabled-fg);
+            }
+
+            :host([selected]) button.toolbar-alt {
+                background: var(--button-toolbar-alt-disabled-bg);
+                color: var(--button--toolbar-alt-disabled-fg);
             }
 
             button.menu {

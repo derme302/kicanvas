@@ -16,11 +16,13 @@ import {
 import type { SchematicTheme } from "../../kicad";
 import * as schematic_items from "../../kicad/schematic";
 import { LibText, SchField, SchText, StrokeFont } from "../../kicad/text";
+import { StrokePainter } from "../base/painter";
 import { LayerNames, LayerSet, ViewLayer } from "./layers";
 import { BaseSchematicPainter, SchematicItemPainter } from "./painters/base";
 import {
     GlobalLabelPainter,
     HierarchicalLabelPainter,
+    DirectiveLabelPainter,
     NetLabelPainter,
 } from "./painters/label";
 import { PinPainter } from "./painters/pin";
@@ -92,7 +94,11 @@ class PolylinePainter extends SchematicItemPainter {
             return;
         }
 
-        this.gfx.line(new Polyline(pl.pts, width, color));
+        const draw_line = (lines: Vec2[]) => {
+            this.gfx.line(lines, width, color);
+        };
+
+        StrokePainter.line(pl.pts, width, pl.stroke_params, draw_line);
     }
 
     #fill(layer: ViewLayer, pl: schematic_items.Polyline) {
@@ -103,6 +109,44 @@ class PolylinePainter extends SchematicItemPainter {
         }
 
         this.gfx.polygon(new Polygon(pl.pts, color));
+    }
+}
+
+class RuleAreaPainter extends SchematicItemPainter {
+    classes = [schematic_items.RuleArea];
+
+    layers_for(item: schematic_items.RuleArea) {
+        return [LayerNames.notes];
+    }
+
+    paint(layer: ViewLayer, item: schematic_items.RuleArea) {
+        const pts = [...item.polyline.pts, item.polyline.pts[0]!.copy()];
+
+        // fill polyline
+        const fill_color = this.determine_fill(layer, item.polyline);
+        if (fill_color) {
+            this.gfx.polygon(new Polygon(pts, fill_color));
+        }
+
+        // polyline outline
+        const outline_width =
+            item.polyline.stroke?.width || this.gfx.state.stroke_width;
+
+        const outline_color =
+            item.polyline.stroke?.color || this.theme.rule_area;
+
+        if (outline_width && outline_color) {
+            const draw_line = (lines: Vec2[]) => {
+                this.gfx.line(lines, outline_width, outline_color);
+            };
+
+            StrokePainter.line(
+                pts,
+                outline_width,
+                item.polyline.stroke_params,
+                draw_line,
+            );
+        }
     }
 }
 
@@ -317,7 +361,14 @@ class TextPainter extends SchematicItemPainter {
         schtext.apply_at(t.at);
         schtext.apply_effects(t.effects);
 
-        schtext.attributes.color = this.dim_if_needed(this.theme.note);
+        const font_color = t.effects.font.color;
+        if (font_color.is_transparent_black) {
+            // The color was not specified.
+            const text_color = this.theme.note;
+            schtext.attributes.color = this.dim_if_needed(text_color);
+        } else {
+            schtext.attributes.color = this.dim_if_needed(font_color);
+        }
 
         this.gfx.state.push();
         StrokeFont.default().draw(
@@ -338,7 +389,7 @@ class PropertyPainter extends SchematicItemPainter {
     }
 
     paint(layer: ViewLayer, p: schematic_items.Property) {
-        if (p.effects.hide || !p.text) {
+        if (p.hide || !p.text) {
             return;
         }
 
@@ -347,25 +398,32 @@ class PropertyPainter extends SchematicItemPainter {
             color = this.theme.sheet_fields;
         }
 
-        switch (p.name) {
-            case "Reference":
-                color = this.theme.reference;
-                break;
-            case "Value":
-                color = this.theme.value;
-                break;
-            case "Sheet name":
-                color = this.theme.sheet_name;
-                break;
-            case "Sheet file":
-                color = this.theme.sheet_filename;
-                break;
+        const font_color = p.effects.font.color;
+        if (font_color.is_transparent_black) {
+            // The color was not specified.
+            switch (p.name) {
+                case "Reference":
+                    color = this.theme.reference;
+                    break;
+                case "Value":
+                    color = this.theme.value;
+                    break;
+                case "Sheet name":
+                    color = this.theme.sheet_name;
+                    break;
+                case "Sheet file":
+                    color = this.theme.sheet_filename;
+                    break;
+            }
+
+            color = this.dim_if_needed(color);
+        } else {
+            color = this.dim_if_needed(font_color);
         }
 
-        color = this.dim_if_needed(color);
-
         const parent = p.parent as schematic_items.SchematicSymbol;
-        const transform = this.view_painter.current_symbol_transform!;
+        const transform = this.view_painter.current_symbol_transform;
+        const matrix = transform?.matrix ?? Matrix3.identity();
 
         let text = p.shown_text;
 
@@ -375,20 +433,21 @@ class PropertyPainter extends SchematicItemPainter {
 
         const schfield = new SchField(text, {
             position: parent.at.position.multiply(10000),
-            transform: transform.matrix,
+            transform: matrix,
+            is_symbol: parent instanceof schematic_items.SchematicSymbol,
         });
 
         schfield.apply_effects(p.effects);
         schfield.attributes.angle = Angle.from_degrees(p.at.rotation);
 
-        // Position is tricky. KiCAD's parser calls into SCH_FIELD::SetPosition
+        // Position is tricky. KiCad's parser calls into SCH_FIELD::SetPosition
         // when parsing which sets the position relative to the parent transform
         // but KiCanvas doesn't do any of that. So we have to do that transform
         // here.
         let rel_position = p.at.position
             .multiply(10000)
             .sub(schfield.parent!.position);
-        rel_position = transform.matrix.inverse().transform(rel_position);
+        rel_position = matrix.inverse().transform(rel_position);
         rel_position = rel_position.add(schfield.parent!.position);
 
         schfield.text_pos = rel_position;
@@ -415,7 +474,7 @@ class PropertyPainter extends SchematicItemPainter {
         ]);
 
         if (layer.name == LayerNames.interactive) {
-            // drawing text is expensive, just draw the bbox for the interactive layer.
+            // Drawing text is expensive, just draw the bbox for the interactive layer.
             this.gfx.line(new Polyline(Array.from(bbox_pts), 0.1, Color.white));
         } else {
             this.gfx.state.push();
@@ -549,7 +608,7 @@ class SchematicSheetPainter extends SchematicItemPainter {
         if (layer.name == LayerNames.label) {
             for (const pin of ss.pins) {
                 const label = new schematic_items.HierarchicalLabel();
-                label.at = pin.at;
+                label.at = pin.at.copy();
                 label.effects = pin.effects;
                 label.text = pin.name;
                 label.shape = pin.shape;
@@ -589,6 +648,7 @@ export class SchematicPainter extends BaseSchematicPainter {
         this.painter_list = [
             new RectanglePainter(this, gfx),
             new PolylinePainter(this, gfx),
+            new RuleAreaPainter(this, gfx),
             new WirePainter(this, gfx),
             new BusPainter(this, gfx),
             new BusEntryPainter(this, gfx),
@@ -603,6 +663,7 @@ export class SchematicPainter extends BaseSchematicPainter {
             new PropertyPainter(this, gfx),
             new SchematicSymbolPainter(this, gfx),
             new NetLabelPainter(this, gfx),
+            new DirectiveLabelPainter(this, gfx),
             new GlobalLabelPainter(this, gfx),
             new HierarchicalLabelPainter(this, gfx),
             new SchematicSheetPainter(this, gfx),

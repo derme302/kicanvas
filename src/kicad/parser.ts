@@ -7,9 +7,11 @@
 import { as_array } from "../base/array";
 import { Color } from "../base/color";
 import { Vec2 } from "../base/math";
-import * as log from "../base/log";
+import { Logger } from "../base/log";
 import { is_number, is_string } from "../base/types";
 import { listify, type List } from "./tokenizer";
+
+export const log = new Logger("kicanvas:parser");
 
 enum Kind {
     // the first token in the expr (kind ...)
@@ -100,6 +102,26 @@ export const T = {
     color(obj: Obj, name: string, e: ListOrAtom): Color {
         const el = e as [string, number, number, number, number?];
         return new Color(el[1] / 255, el[2] / 255, el[3] / 255, el[4]);
+    },
+    /**
+     * Choose a type processor by prefix
+     *
+     * Example: `choice[("xy", T.vec2), ("color", T.color)]`
+     *  - if input is `(xy 1 2)`, use `T.vec2` to parse input
+     *  - if input is `(color 1 2 3)`, use `T.color` to parse input
+     */
+    choice(...fns: [prefix: string, TypeProcessor][]): TypeProcessor {
+        return (obj: Obj, name: string, e: ListOrAtom) => {
+            const e_str = e as string[];
+
+            for (const [prefix, fn] of fns) {
+                if (prefix === e_str[0]) {
+                    return fn(obj, name, e);
+                }
+            }
+
+            throw new Error(`No matched for ${e}`);
+        };
     },
 };
 
@@ -220,7 +242,7 @@ export const P = {
             fn: (obj: Obj, name: string, e: ListOrAtom) => {
                 const el = e as [string, string, any];
                 const rec = obj[name] ?? {};
-                rec[el[1]] = typefn(obj, name, el[2]);
+                rec[el[1]] = typefn(obj, name, el.slice(2));
                 return rec;
             },
         };
@@ -288,7 +310,7 @@ export const P = {
         return P.expr(name, T.item(item_type, ...args));
     },
     /**
-     * Accepts an expression that describes a 2d vector. For example,
+     * Accepts an expression that describes a 2D vector. For example,
      * ((xy 1 2)) with vec2("xy") would end up with {xy: Vec2(1, 2)}.
      */
     vec2(name: string) {
@@ -303,7 +325,7 @@ export type Parseable = string | List;
 
 export function parse_expr(expr: string | List, ...defs: PropertyDefinition[]) {
     if (is_string(expr)) {
-        log.message(`Parsing expression with ${expr.length} chars`);
+        log.info(`Parsing expression with ${expr.length} chars`);
         expr = listify(expr);
         if (expr.length == 1 && Array.isArray(expr[0])) {
             expr = expr[0];
@@ -334,7 +356,7 @@ export function parse_expr(expr: string | List, ...defs: PropertyDefinition[]) {
 
         if (!acceptable_start_strings.includes(first)) {
             throw new Error(
-                `Expression must start with ${start_def.name} found ${first} in ${expr}`,
+                `Expression must start with ${start_def.name}, but found ${first} in ${expr}`,
             );
         }
 
@@ -358,7 +380,7 @@ export function parse_expr(expr: string | List, ...defs: PropertyDefinition[]) {
 
             if (!def) {
                 log.warn(
-                    `no def for bare element ${element} at position ${n} in expression ${expr}`,
+                    `Bare element ${element} is undefined at position ${n} in expression ${expr}`,
                 );
                 continue;
             }
@@ -373,7 +395,7 @@ export function parse_expr(expr: string | List, ...defs: PropertyDefinition[]) {
 
         if (!def) {
             log.warn(
-                `No def found for element ${element} in expression ${expr}`,
+                `No definition found for element ${element} in expression ${expr}`,
             );
             continue;
         }

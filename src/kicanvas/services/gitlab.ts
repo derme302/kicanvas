@@ -4,200 +4,197 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { basename } from "../../base/paths";
+import { request_error_handler, UnknownError } from "./api-error";
 
-export class BaseAPIError extends Error {
-    constructor(
-        public override name: string,
-        public url: string,
-        public description: string,
-        public response?: Response,
-    ) {
-        super(`GitLab${name}: ${url}: ${description}`);
-    }
+export class GitLabURLInfo {
+    /** Full project path, including any subgroups, e.g. `group/subgroup/repo` */
+    project: string;
+    type: "root" | "tree" | "blob";
+    ref?: string;
+    path?: string;
 }
 
-export class UnknownError extends BaseAPIError {
-    constructor(url: string, description: string, response: Response) {
-        super(`NotFoundError`, url, description, response);
-    }
+/** An entry returned by the repository tree API. */
+export class GitLabTreeResponse {
+    id: string;
+    name: string;
+    type: "tree" | "blob" | "commit";
+    path: string;
+    mode: string;
 }
 
-export class NotFoundError extends BaseAPIError {
-    constructor(url: string, response: Response) {
-        super(`NotFoundError`, url, "not found", response);
-    }
-}
-
+/**
+ * Client for the GitLab (gitlab.com) REST API v4.
+ *
+ * Only gitlab.com is supported. Self-hosted instances are not.
+ */
 export class GitLab {
-    static readonly html_base_url = "https://gitlab.com";
-    static readonly base_url = this.html_base_url + "/api/v4/";
-    static readonly api_version = "v4";
-    static readonly accept_header = "application/vnd.gitlab+json";
-
-    headers: Record<string, string>;
-    last_response?: Response;
-    rate_limit_remaining?: number;
-
-    constructor() {
-        this.headers = {
-            Accept: GitLab.accept_header,
-            "X-GitLab-Api-Version": GitLab.api_version,
-        };
-    }
+    static readonly host_names = ["gitlab.com", "www.gitlab.com"];
+    static readonly html_base_url = "https://gitlab.com/";
+    static readonly base_url = "https://gitlab.com/api/v4/";
+    static readonly accept_header = "application/json";
+    static readonly page_size = 100;
 
     /**
      * Parse an html (user-facing) URL
+     *
+     * Handles URLs like:
+     * - https://gitlab.com/group/repo
+     * - https://gitlab.com/group/subgroup/repo/-/tree/main/some/dir
+     * - https://gitlab.com/group/repo/-/blob/main/dir/file.kicad_sch
+     * - https://gitlab.com/group/repo/-/raw/main/dir/file.kicad_sch
+     * - https://gitlab.com/group/repo/blob/main/dir/file.kicad_sch (legacy)
+     *
+     * Note that refs containing slashes are not supported, since there's no
+     * way to tell where the ref ends and the path begins from the URL alone.
      */
-    static parse_url(url: string | URL) {
-        url = new URL(url, GitLab.html_base_url);
-        const path_parts = url.pathname.split("/");
-
-        if (path_parts.length < 3) {
+    static parse_url(url: string | URL): GitLabURLInfo | null {
+        let parsed: URL;
+        try {
+            parsed = new URL(url, GitLab.html_base_url);
+        } catch {
             return null;
         }
 
-        const [, owner, repo, ...parts] = path_parts;
+        if (!GitLab.host_names.includes(parsed.hostname)) {
+            return null;
+        }
 
-        let type;
-        let ref;
-        let path;
+        let parts: string[];
+        try {
+            parts = parsed.pathname
+                .split("/")
+                .filter((s) => s !== "")
+                .map((s) => decodeURIComponent(s));
+        } catch {
+            return null;
+        }
 
-        if (parts.length) {
-            if (parts[0] == "blob" || parts[0] == "tree") {
-                type = parts.shift();
-                ref = parts.shift();
-                path = parts.join("/");
-            }
+        // GitLab separates the project path from the rest with "/-/". Older
+        // URLs omit it, in which case look for the first tree/blob/raw segment.
+        let sep = parts.indexOf("-");
+        if (sep === -1) {
+            sep = parts.findIndex(
+                (p, i) =>
+                    i >= 2 && (p === "tree" || p === "blob" || p === "raw"),
+            );
+        }
+
+        const project_parts = sep === -1 ? parts : parts.slice(0, sep);
+        const rest =
+            sep === -1 ? [] : parts.slice(sep + (parts[sep] === "-" ? 1 : 0));
+
+        if (project_parts.length < 2) {
+            return null;
+        }
+
+        const project = project_parts.join("/").replace(/\.git$/, "");
+
+        if (rest.length === 0) {
+            return { project, type: "root" };
+        }
+
+        const [kind, ref, ...path] = rest;
+        if (!ref || (kind !== "tree" && kind !== "blob" && kind !== "raw")) {
+            return null;
         }
 
         return {
-            owner: owner,
-            repo: repo,
-            type: type,
-            ref: ref,
-            path: path,
+            project,
+            type: kind === "tree" ? "tree" : "blob",
+            ref,
+            path: path.join("/"),
         };
     }
 
-    async request(
+    /** API path prefix for a project, e.g. `projects/group%2Frepo` */
+    static project_path(project: string): string {
+        return `projects/${encodeURIComponent(project)}`;
+    }
+
+    private static async fetch(
         path: string,
         params?: Record<string, string>,
-        data?: unknown,
-    ): Promise<unknown> {
-        const static_this = this.constructor as typeof GitLab;
-
-        const url = new URL(path, static_this.base_url);
+    ): Promise<Response> {
+        const url = new URL(path, GitLab.base_url);
 
         if (params) {
-            const url_params = new URLSearchParams(params).toString();
-            url.search = `?${url_params}`;
+            url.search = new URLSearchParams(params).toString();
         }
 
-        const request = new Request(url, {
-            method: data ? "POST" : "GET",
-            headers: this.headers,
-            body: data ? JSON.stringify(data) : undefined,
-        });
-
-        const response = await fetch(request);
-        await this.handle_server_error(response);
-
-        this.last_response = response;
-
-        this.rate_limit_remaining = parseInt(
-            response.headers.get("x-ratelimit-remaining") ?? "",
-            10,
+        const response = await fetch(
+            new Request(url, {
+                method: "GET",
+                headers: { Accept: GitLab.accept_header },
+            }),
         );
 
-        if (
-            response.headers.get("content-type") ==
-            "application/json; charset=utf-8"
-        ) {
-            return await response.json();
-        } else {
-            return await response.text();
+        await request_error_handler(response);
+
+        if (!response.ok) {
+            throw new UnknownError(
+                response.url,
+                `${response.status} ${response.statusText}`,
+                response,
+            );
         }
+
+        return response;
     }
 
-    async handle_server_error(response: Response) {
-        switch (response.status) {
-            case 200:
-                return;
-            case 404: {
-                throw new NotFoundError(response.url, response);
-            }
-            case 500: {
-                throw new UnknownError(
-                    response.url,
-                    await response.text(),
-                    response,
-                );
-            }
-        }
-    }
-
-    async repos_contents(
-        owner: string,
-        repo: string,
+    static async request_json<T>(
         path: string,
-        ref?: string,
-    ) {
-        let project: any = await this.request(`projects/${repo}`, {});
-
-        return await this.request(
-            `projects/${project.id}/repository/tree?path=${path}`,
-        );
-    }
-}
-
-export class GitLabUserContent {
-    static readonly base_url = "https://gitlab.com/";
-
-    constructor() {}
-
-    async get(url_or_path: string | URL): Promise<File> {
-        const url = new URL(url_or_path, GitLabUserContent.base_url);
-        const request = new Request(url, { method: "GET" });
-        const response = await fetch(request);
-        const blob = await response.blob();
-        const name = basename(url) ?? "unknown";
-
-        return new File([blob], name);
+        params?: Record<string, string>,
+    ): Promise<T> {
+        const response = await GitLab.fetch(path, params);
+        return (await response.json()) as T;
     }
 
     /**
-     * Converts GitLab UI paths to valid paths for raw gitlab links
+     * Lists the files and directories directly inside of `path`.
      *
-     * https://gitlab.com/derme302/jellyfish-and-starfish/-/blob/main/hardware/jellyfish_tailboard/jellyfish_tailboard.kicad_pcb
-     * becomes
-     * https://gitlab.com/derme302/jellyfish-and-starfish/-/raw/main/hardware/jellyfish_tailboard/jellyfish_tailboard.kicad_pcb
+     * API: https://docs.gitlab.com/ee/api/repositories.html#list-repository-tree
      */
-    convert_url(url: string | URL): URL {
-        const u = new URL(url, "https://gitlab.com/");
+    static async repos_contents(
+        project: string,
+        path: string,
+        ref: string,
+    ): Promise<GitLabTreeResponse[]> {
+        const results: GitLabTreeResponse[] = [];
 
-        if (u.pathname.includes("/-/raw/")) {
-            return u;
-        }
-
-        const parts = u.pathname.split("/");
-
-        if (parts.length < 4) {
-            throw new Error(
-                `URL ${url} can't be converted to a raw GitLab URL`,
+        for (let page = 1; ; page++) {
+            const entries = await GitLab.request_json<GitLabTreeResponse[]>(
+                `${GitLab.project_path(project)}/repository/tree`,
+                {
+                    path: path,
+                    ref: ref,
+                    per_page: GitLab.page_size.toString(),
+                    page: page.toString(),
+                },
             );
+
+            results.push(...entries);
+
+            if (entries.length < GitLab.page_size) {
+                return results;
+            }
         }
+    }
 
-        const [_, user, repo, blob, ref, ...path_parts] = parts;
-
-        if (blob != "blob") {
-            throw new Error(
-                `URL ${url} can't be converted to a raw GitLab URL`,
-            );
-        }
-
-        const path = [user, repo, "-", "raw", ref, ...path_parts].join("/");
-
-        return new URL(path, GitLabUserContent.base_url);
+    /**
+     * Downloads the raw contents of the file at `path`.
+     *
+     * API: https://docs.gitlab.com/ee/api/repository_files.html#get-raw-file-from-repository
+     */
+    static async get_raw_file(
+        project: string,
+        path: string,
+        ref: string,
+    ): Promise<Blob> {
+        const response = await GitLab.fetch(
+            `${GitLab.project_path(project)}/repository/files/${encodeURIComponent(path)}/raw`,
+            { ref: ref },
+        );
+        return await response.blob();
     }
 }

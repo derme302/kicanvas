@@ -6,7 +6,7 @@
 
 import { Color } from "../base/color";
 import { Vec2 } from "../base/math";
-import { P, T, parse_expr, type Parseable } from "./parser";
+import { P, T, parse_expr, log, type Parseable } from "./parser";
 
 export function unescape_string(str: string): string {
     const escape_vars = {
@@ -33,6 +33,11 @@ export function unescape_string(str: string): string {
     return str;
 }
 
+/** Object with a unique ID (UUID or tstamp). */
+export interface HasUniqueID {
+    get unique_id(): string | undefined;
+}
+
 export type HasResolveTextVars = {
     resolve_text_var: (name: string) => string | undefined;
 };
@@ -47,18 +52,33 @@ export function expand_text_vars(
         return text;
     }
 
-    text = text.replaceAll(
-        /(\$\{(.+?)\})/g,
-        (substring: string, all: string, name: string) => {
-            const val = resolveable.resolve_text_var(name);
+    // replace all text variables
+    let last_len;
+    let retry_count = 8;
+    const resolved: string[] = [];
+    do {
+        last_len = resolved.length;
+        retry_count -= 1;
 
-            if (val === undefined) {
-                return all;
-            }
+        text = text.replaceAll(
+            /(\$\{(.+?)\})/g,
+            (substring: string, all: string, name: string) => {
+                if (resolved.includes(name)) {
+                    log.warn(`Cycle reference "${name}" in text "${text}"`);
+                    return all;
+                }
 
-            return val;
-        },
-    );
+                const val = resolveable.resolve_text_var(name);
+                if (val === undefined) {
+                    return all;
+                }
+
+                resolved.push(name);
+
+                return val;
+            },
+        );
+    } while (last_len !== resolved.length || retry_count === 0);
 
     return text;
 }
@@ -87,6 +107,14 @@ export class At {
             this.rotation = parsed.rotation ?? this.rotation;
             this.unlocked = parsed.unlocked ?? this.unlocked;
         }
+    }
+
+    copy() {
+        const at = new At();
+        at.position = this.position.copy();
+        at.rotation = this.rotation;
+        at.unlocked = this.unlocked;
+        return at;
     }
 }
 
@@ -255,10 +283,11 @@ export class Font {
                     P.atom("bold"),
                     P.atom("italic"),
                     P.pair("line_spacing", T.number),
+                    P.color(),
                 ),
             );
 
-            // Note: KiCAD saves height as the first number and width as the
+            // Note: KiCad saves height as the first number and width as the
             // second. I have no fucking idea why they did that.
             [this.size.x, this.size.y] = [this.size.y, this.size.x];
         }
@@ -322,5 +351,134 @@ export class Stroke {
                 P.color(),
             ),
         );
+    }
+
+    static default_value(): Stroke {
+        return {
+            width: 0,
+            type: "default",
+            color: Color.transparent_black,
+        };
+    }
+}
+
+export enum EmbeddedFileType {
+    Datasheet = "datasheet",
+    Font = "font",
+    Model = "model",
+    Worksheet = "worksheet",
+    Other = "other",
+}
+
+export class EmbeddedFile {
+    name: string;
+    type: EmbeddedFileType;
+    data?: string;
+    checksum: string;
+
+    constructor(expr: Parseable) {
+        Object.assign(
+            this,
+            parse_expr(
+                expr,
+                P.start("file"),
+                P.pair("name", T.string),
+                P.pair("type", T.string),
+                P.pair("data", T.string),
+                P.pair("checksum", T.string),
+            ),
+        );
+    }
+
+    async decompress_file(): Promise<File | undefined> {
+        // see also:
+        // https://gitlab.com/kicad/code/kicad/-/blob/master/common/embedded_files.cpp#L253
+        if (!this.data) {
+            // need be found in the board file
+            return undefined;
+        }
+
+        // TODO
+
+        return undefined;
+    }
+}
+
+/** Stroke and additional parameters for dashed lines. */
+export class StrokeParams {
+    stroke: Stroke;
+    dashed_line_gap_ratio: number;
+    dashed_line_dash_ratio: number;
+
+    /** ISO 128-2 line correction factor */
+    private static line_correction = 1.0;
+
+    /** Calculate the length of a dot in a dashed line. */
+    static dot_length(line: number): number {
+        // https://gitlab.com/kicad/code/kicad/-/blob/master/common/render_settings.cpp#L73
+        return Math.max(1.0 - StrokeParams.line_correction, 0.2) * line;
+    }
+
+    /** Calculate the length of a gap in a dashed line. */
+    static gap_length(line: number, stroke: StrokeParams): number {
+        const gap_ratio = stroke.dashed_line_gap_ratio;
+        // https://gitlab.com/kicad/code/kicad/-/blob/master/common/render_settings.cpp#L81
+        return Math.max(gap_ratio + StrokeParams.line_correction, 1.0) * line;
+    }
+
+    /** Calculate the length of a dash in a dashed line. */
+    static dash_length(line: number, stroke: StrokeParams): number {
+        const dash_ratio = stroke.dashed_line_dash_ratio;
+        // https://gitlab.com/kicad/code/kicad/-/blob/master/common/render_settings.cpp#L67
+        return Math.max(dash_ratio - StrokeParams.line_correction, 1.0) * line;
+    }
+
+    /** Solid line, gap: 3, dash: 12. */
+    static default_value(): StrokeParams {
+        return {
+            stroke: Stroke.default_value(),
+            dashed_line_gap_ratio: 3,
+            dashed_line_dash_ratio: 12,
+        };
+    }
+}
+
+export interface HasStrokeParams {
+    get stroke_params(): StrokeParams;
+}
+
+export class Net {
+    number: number;
+    name: string;
+
+    constructor(expr: Parseable) {
+        // (net 2 "+3V3")
+        Object.assign(
+            this,
+            parse_expr(
+                expr,
+                P.start("net"),
+                P.positional("number", T.number),
+                P.positional("name", T.string),
+            ),
+        );
+    }
+}
+
+/** Items which store info for a single net */
+export interface HasNetInfo {
+    net: number | Net;
+    get netname(): string | undefined;
+}
+
+export function isNetInfo(obj: any): obj is HasNetInfo {
+    return "net" in obj && obj.__lookupGetter__("netname") !== undefined;
+}
+
+export function getNetNumber(item: HasNetInfo): number {
+    if (typeof item.net === "number") {
+        return item.net;
+    } else {
+        return item.net.number;
     }
 }

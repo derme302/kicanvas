@@ -4,8 +4,8 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { css, html } from "../../base/web-components";
-import { KCUIElement } from "../../kc-ui";
+import { css, html } from "../../../base/web-components";
+import { KCUIElement } from "../../../kc-ui";
 
 export class KCHelpPanel extends KCUIElement {
     static override styles = [
@@ -13,7 +13,7 @@ export class KCHelpPanel extends KCUIElement {
         css`
             p {
                 margin: 0;
-                padding: 0.5rem;
+                padding: 0.5em;
             }
 
             a {
@@ -33,10 +33,9 @@ export class KCHelpPanel extends KCUIElement {
                 <kc-ui-panel-body>
                     <p>
                         You're using
-                        <a href="https://github.com/theacodes/kicanvas"
-                            >KiCanvas</a
-                        >, an interactive, browser-based viewer for KiCAD
-                        schematics and boards.
+                        <a href="https://kicanvas.org/home">KiCanvas</a>, an
+                        interactive, browser-based viewer for KiCad schematics
+                        and boards.
                     </p>
                     <p>
                         KiCanvas is very much in <strong>alpha</strong>, so

@@ -4,7 +4,7 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { assert } from "@esm-bundle/chai";
+import { assert } from "chai";
 
 import { Vec2 } from "../../src/base/math";
 import { P, T, parse_expr } from "../../src/kicad/parser";
@@ -91,14 +91,15 @@ suite("kicad.parser.parse_expr(): s-expression parser", function () {
 
     test(".dict()", function () {
         const res = parse_expr(
-            listify("(def a 1) (def b 2) (def c (3 4))"),
+            listify("(def a 1) (def b 2) (def c (3 4)) (def d 5 6 7)"),
             P.dict("defs", "def"),
         );
         assert.deepEqual(res, {
             defs: {
-                a: 1,
-                b: 2,
-                c: [3, 4],
+                a: [1],
+                b: [2],
+                c: [[3, 4]],
+                d: [5, 6, 7],
             },
         });
     });
@@ -266,7 +267,10 @@ suite("kicad.parser.parse_expr(): s-expression parser", function () {
 
 class TestItem {
     args: any[];
-    constructor(public expr: any, ...args: any[]) {
+    constructor(
+        public expr: any,
+        ...args: any[]
+    ) {
         this.args = args;
     }
 }

@@ -9,12 +9,15 @@
         "**/*.js": {
             "when": "$(basename).ts"
         },
-        "dist/": true
+        "build/": true
     },
     "cSpell.words": [
         "Adhes",
+        "alethea",
+        "bbox",
         "bboxes",
         "decidegrees",
+        "desaturate",
         "descr",
         "disableapertmacros",
         "Dwgs",
@@ -26,13 +29,20 @@
         "hpglpendiameter",
         "hpglpennumber",
         "hpglpenspeed",
+        "KCUI",
+        "keepout",
+        "kicad",
         "kicanvas",
         "listify",
+        "Parseable",
         "pcbplotparams",
         "psnegative",
+        "renderable",
+        "resizer",
         "rratio",
         "sexpr",
         "svgprecision",
+        "svgstore",
         "svguseinch",
         "tedit",
         "Tesselator",
@@ -42,4 +52,28 @@
     "debug.console.closeOnEnd": true,
     "debug.terminal.clearBeforeReusing": true,
     "typescript.tsdk": "node_modules/typescript/lib",
+    "[javascript]": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.formatOnSave": true,
+    },
+    "[typescript]": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.formatOnSave": true,
+    },
+    "[markdown]": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.formatOnSave": true,
+    },
+    "[json]": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.formatOnSave": true,
+    },
+    "[yaml]": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.formatOnSave": true,
+    },
+    "[html]": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.formatOnSave": true,
+    },
 }

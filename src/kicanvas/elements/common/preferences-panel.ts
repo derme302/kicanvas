@@ -4,10 +4,10 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { css, html, query } from "../../base/web-components";
-import { KCUIElement } from "../../kc-ui";
-import { Preferences } from "../preferences";
-import themes from "../themes";
+import { css, html, query } from "../../../base/web-components";
+import { KCUIElement } from "../../../kc-ui";
+import { Preferences } from "../../preferences";
+import themes from "../../themes";
 
 const prefs = Preferences.INSTANCE;
 
@@ -20,18 +20,19 @@ export class KCPreferencesPanel extends KCUIElement {
                 display: block;
                 width: 100%;
                 max-width: 100%;
-                margin-top: 0.25rem;
+                margin-top: 0.25em;
                 font-family: inherit;
                 font-size: inherit;
                 font-weight: 300;
-                margin-top: 0.25rem;
-                border-radius: 0.25rem;
+                margin-top: 0.25em;
+                border-radius: 0.25em;
                 text-align: left;
-                padding: 0.25rem;
+                padding: 0.25em;
                 background: var(--input-bg);
                 color: var(--input-fg);
                 border: var(--input-border);
-                transition: color var(--transition-time-medium) ease,
+                transition:
+                    color var(--transition-time-medium) ease,
                     box-shadow var(--transition-time-medium) ease,
                     outline var(--transition-time-medium) ease,
                     background var(--transition-time-medium) ease,
@@ -62,7 +63,14 @@ export class KCPreferencesPanel extends KCUIElement {
 
     override initialContentCallback() {
         this.renderRoot.addEventListener("input", (e) => {
-            prefs.theme = themes.by_name(this.theme_control.value);
+            const target = e.target as HTMLInputElement;
+
+            if (target.name === "theme") {
+                prefs.theme = themes.by_name(this.theme_control.value);
+            }
+            if (target.name === "align-controls-kicad") {
+                prefs.alignControlsWithKiCad = target.checked;
+            }
             prefs.save();
         });
     }
@@ -88,6 +96,15 @@ export class KCPreferencesPanel extends KCUIElement {
                             </select>
                         </kc-ui-control>
                     </kc-ui-control-list>
+                    <kc-ui-control>
+                        <label>
+                            <input
+                                type="checkbox"
+                                name="align-controls-kicad"
+                                checked="${prefs.alignControlsWithKiCad}" />
+                            Align controls with KiCad
+                        </label>
+                    </kc-ui-control>
                 </kc-ui-panel-body>
             </kc-ui-panel>
         `;

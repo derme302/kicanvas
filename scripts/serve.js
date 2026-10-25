@@ -6,16 +6,19 @@
 
 import { bundle } from "./bundle.js";
 
-let { options, context } = await bundle({
-    outfile: "www/kicanvas/kicanvas.js",
+let { context } = await bundle({
+    outfile: "debug/kicanvas/kicanvas.js",
     sourcemap: true,
+    define: {
+        DEBUG: "true",
+    },
 });
 
 await context.watch();
 
-let { host, port } = await context.serve({
-    servedir: "./www",
+let { hosts, port } = await context.serve({
+    servedir: "./debug",
+    port: 8001,
 });
 
-console.log(`Watching and building to ${options.outfile}`);
-console.log(`Serving at http://${host}:${port}`);
+console.log(`[serve] listening at http://${hosts[0]}:${port}`);

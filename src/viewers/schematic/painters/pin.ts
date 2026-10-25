@@ -18,13 +18,13 @@ import { LayerNames, ViewLayer } from "../layers";
 import { SchematicItemPainter } from "./base";
 
 /**
- * Implements KiCAD rendering logic for symbol pins.
+ * Implements KiCad rendering logic for symbol pins.
  *
- * This is similar in scope to the EDAText class and its children, it's
- * designed to recreate KiCAD's behavior as closely as possible.
+ * This is similar in scope to the EDAText class and its children.  It's
+ * designed to recreate KiCad's behavior as closely as possible.
  *
  * The logic here is based a few small bits of LIB_PIN and EDA_ITEM, with the
- * ast majority adapted from SCH_PAINTER::draw( const LIB_PIN, ...) - which is
+ * vast majority adapted from SCH_PAINTER::draw( const LIB_PIN, ...), which is
  * a massive method at over 400 lines!
  *
  */
@@ -78,9 +78,9 @@ export class PinPainter extends SchematicItemPainter {
     /**
      * Applies symbol transformation (rotation, position, mirror).
      *
-     * KiCAD doesn't directly set the transformation for symbol items, instead,
+     * KiCad doesn't directly set the transformation for symbol items, instead,
      * it indirectly sets them through individual rotations and transforms.
-     * See KiCAD's sch_painter.cpp::orientSymbol.
+     * See KiCad's sch_painter.cpp::orientSymbol.
      */
     static apply_symbol_transformations(
         pin: PinInfo,
@@ -201,7 +201,7 @@ export class PinPainter extends SchematicItemPainter {
     draw_name_and_number(gfx: Renderer, pin: PinInfo) {
         const def = pin.def;
         const libsym = pin.pin.parent.lib_symbol;
-        const name = def.name.text;
+        const name = pin.pin.alternate ?? def.name.text;
         const number = def.number.text;
         const pin_length = def.length;
         const hide_pin_names = libsym.pin_names.hide || !name || name == "~";
@@ -297,7 +297,7 @@ type PinOrientation = "right" | "left" | "up" | "down";
 /**
  * Converts a rotation to a pin orientation.
  *
- * KiCAD saves pin orientation as a rotation, but presents it to the UI and
+ * KiCad saves pin orientation as a rotation, but presents it to the UI and
  * does placement based on the "orientation" which is simply left, right, up,
  * or down.
  */
@@ -520,7 +520,7 @@ export const PinLabelInternals = {
     },
 
     /**
-     * Places a label inside the symbol body- or to put it another way,
+     * Places a label inside the symbol body.  Or to put it another way,
      * places it to the left side of a pin that's on the right side of a symbol
      */
     place_inside(

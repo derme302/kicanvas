@@ -5,31 +5,31 @@
 */
 
 import { basename } from "../../base/paths";
+import { is_array } from "../../base/types";
+import { request_error_handler } from "./api-error";
 
-export class BaseAPIError extends Error {
-    constructor(
-        public override name: string,
-        public url: string,
-        public description: string,
-        public response?: Response,
-    ) {
-        super(`GitHub${name}: ${url}: ${description}`);
-    }
+export class GitHubURLInfo {
+    owner: string;
+    repo: string;
+    type: string;
+    ref?: string;
+    path?: string;
 }
 
-export class UnknownError extends BaseAPIError {
-    constructor(url: string, description: string, response: Response) {
-        super(`NotFoundError`, url, description, response);
-    }
-}
-
-export class NotFoundError extends BaseAPIError {
-    constructor(url: string, response: Response) {
-        super(`NotFoundError`, url, "not found", response);
-    }
+export class GithubContentResponse {
+    download_url: string;
+    git_url: string;
+    html_url: string;
+    name: string;
+    path: string;
+    sha: string;
+    size: number;
+    type: string;
+    url: string;
 }
 
 export class GitHub {
+    static readonly host_name = "github.com";
     static readonly html_base_url = "https://github.com";
     static readonly base_url = "https://api.github.com/";
     static readonly api_version = "2022-11-28";
@@ -49,15 +49,22 @@ export class GitHub {
     /**
      * Parse an html (user-facing) URL
      */
-    static parse_url(url: string | URL) {
+    static parse_url(url: string | URL): GitHubURLInfo | null {
         url = new URL(url, GitHub.html_base_url);
-        const path_parts = url.pathname.split("/");
+        if (url.hostname != GitHub.host_name) {
+            return null;
+        }
+
+        const path_parts = url.pathname.split("/").map((s) => decodeURI(s));
 
         if (path_parts.length < 3) {
             return null;
         }
 
         const [, owner, repo, ...parts] = path_parts;
+        if (!owner || !repo) {
+            return null;
+        }
 
         let type;
         let ref;
@@ -71,6 +78,10 @@ export class GitHub {
             }
         } else {
             type = "root";
+        }
+
+        if (!type) {
+            return null;
         }
 
         return {
@@ -103,7 +114,7 @@ export class GitHub {
         });
 
         const response = await fetch(request);
-        await this.handle_server_error(response);
+        await request_error_handler(response);
 
         this.last_response = response;
 
@@ -122,32 +133,24 @@ export class GitHub {
         }
     }
 
-    async handle_server_error(response: Response) {
-        switch (response.status) {
-            case 200:
-                return;
-            case 404: {
-                throw new NotFoundError(response.url, response);
-            }
-            case 500: {
-                throw new UnknownError(
-                    response.url,
-                    await response.text(),
-                    response,
-                );
-            }
-        }
-    }
-
     async repos_contents(
         owner: string,
         repo: string,
         path: string,
         ref?: string,
     ) {
-        return await this.request(`repos/${owner}/${repo}/contents/${path}`, {
-            ref: ref ?? "",
-        });
+        // https://docs.github.com/en/rest/repos/contents
+        // <api_base>/repos/{owner}/{repo}/contents/{path}
+        const result = await this.request(
+            `repos/${owner}/${repo}/contents/${path}`,
+            {
+                ref: ref ?? "",
+            },
+        );
+
+        return is_array(result)
+            ? (result as GithubContentResponse[])
+            : [result as GithubContentResponse];
     }
 }
 

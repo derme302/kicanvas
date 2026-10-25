@@ -4,7 +4,7 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { assert } from "@esm-bundle/chai";
+import { assert } from "chai";
 import * as schematic from "../../src/kicad/schematic";
 import { assert_deep_partial } from "../utilities";
 
@@ -13,7 +13,10 @@ import paper_sch_src from "./files/paper.kicad_sch";
 import wires_sch_src from "./files/wires.kicad_sch";
 import labels_sch_src from "./files/labels.kicad_sch";
 import drawings_sch_src from "./files/drawings.kicad_sch";
+import drawings_kicad9_sch_src from "./files/drawings_kicad9.kicad_sch";
 import symbols_sch_src from "./files/symbols.kicad_sch";
+import symbols_kicad8_sch_src from "./files/symbols_kicad8.kicad_sch";
+import symbols_kicad10_sch_src from "./files/symbols_kicad10.kicad_sch";
 
 suite("kicad.schematic.KicadSch(): schematic parsing", function () {
     test("with empty schematic file", function () {
@@ -61,7 +64,7 @@ suite("kicad.schematic.KicadSch(): schematic parsing", function () {
 
         assert.equal(sch.wires.length, 11);
 
-        // note: KiCAD saves stuff out of order, so the numbers here
+        // note: KiCad saves stuff out of order, so the numbers here
         // are goofy. They reflect the visual order of the wires/buses.
         const wire1 = sch.wires[7];
         assert_deep_partial(wire1, {
@@ -313,6 +316,25 @@ suite("kicad.schematic.KicadSch(): schematic parsing", function () {
         assert.equal(sch.images.length, 1);
     });
 
+    test("with kicad9 drawings", function () {
+        const sch = new schematic.KicadSch(
+            "test.kicad_sch",
+            drawings_kicad9_sch_src,
+        );
+
+        assert.equal(sch.drawings.length, 1);
+
+        const circle1 = sch.drawings[0] as schematic.Circle;
+        assert_deep_partial(circle1, {
+            center: { x: 0, y: 0 },
+            radius: 5.08,
+            stroke: {
+                width: 0.25,
+                type: "solid",
+            },
+        });
+    });
+
     test("with library symbols", function () {
         const sch = new schematic.KicadSch("test.kicad_sch", symbols_sch_src);
 
@@ -388,6 +410,8 @@ suite("kicad.schematic.KicadSch(): schematic parsing", function () {
             name: "Datasheet",
             text: "~",
             id: 3,
+            // both hide attribute are `true`
+            hide: true,
             effects: {
                 hide: true,
             },
@@ -492,6 +516,252 @@ suite("kicad.schematic.KicadSch(): schematic parsing", function () {
             name: "Reference",
             text: "#PWR",
             effects: { hide: true },
+        });
+
+        assert_deep_partial(lib_gnd?.properties.get("Value"), {
+            name: "Value",
+            text: "GND",
+        });
+    });
+
+    test("with library symbols (KiCad 8)", function () {
+        const sch = new schematic.KicadSch(
+            "test.kicad8_sch",
+            symbols_kicad8_sch_src,
+        );
+
+        const symbols = Array.from(sch.symbols.values());
+        assert.equal(symbols.length, 2);
+
+        const c1 = symbols[1]!;
+        const c2 = symbols[0]!;
+
+        assert.include(c1, {
+            exclude_from_sim: true,
+        });
+
+        assert.include(c2, {
+            exclude_from_sim: false,
+        });
+
+        assert_deep_partial(c1.properties.get("Reference"), {
+            text: "C1",
+            hide: false,
+            effects: {
+                font: {
+                    size: { x: 1.27, y: 1.27 },
+                },
+            },
+        });
+
+        assert_deep_partial(c1.properties.get("Description"), {
+            text: "Unpolarized capacitor",
+            hide: true,
+            effects: {
+                font: {
+                    size: { x: 1.27, y: 1.27 },
+                },
+            },
+        });
+
+        assert_deep_partial(c2.properties.get("Reference"), {
+            text: "C2",
+            hide: false,
+            effects: {
+                font: {
+                    size: { x: 1.27, y: 1.27 },
+                },
+            },
+        });
+    });
+
+    test("with library symbols (KiCad 10)", function () {
+        const sch = new schematic.KicadSch(
+            "test.kicad_sch",
+            symbols_kicad10_sch_src,
+        );
+
+        assert.equal(sch.lib_symbols!.symbols.length, 4);
+
+        const lib_c = sch.lib_symbols!.symbols[0];
+        assert_deep_partial(lib_c, {
+            name: "Device:C",
+            pin_numbers: { hide: true },
+            pin_names: { offset: 0.254, hide: false },
+            in_bom: true,
+            on_board: true,
+            children: [
+                {
+                    name: "C_0_1",
+                    drawings: [
+                        {
+                            pts: [
+                                { x: -2.032, y: 0.762 },
+                                { x: 2.032, y: 0.762 },
+                            ],
+                            stroke: { type: "default" },
+                            fill: { type: "none" },
+                        },
+                        {
+                            pts: [
+                                { x: -2.032, y: -0.762 },
+                                { x: 2.032, y: -0.762 },
+                            ],
+                            stroke: { type: "default" },
+                            fill: { type: "none" },
+                        },
+                    ],
+                },
+                {
+                    name: "C_1_1",
+                    pins: [
+                        {
+                            type: "passive",
+                            shape: "line",
+                            at: { position: { x: 0, y: 3.81 }, rotation: 270 },
+                            length: 2.794,
+                            name: {
+                                text: "",
+                                effects: {
+                                    font: { size: { x: 1.27, y: 1.27 } },
+                                },
+                            },
+                            number: {
+                                text: "1",
+                                effects: {
+                                    font: { size: { x: 1.27, y: 1.27 } },
+                                },
+                            },
+                        },
+                    ],
+                },
+            ],
+        });
+
+        assert_deep_partial(lib_c?.properties.get("Reference"), {
+            name: "Reference",
+            text: "C",
+            hide: false,
+            at: { position: { x: 0.635, y: 2.54 }, rotation: 0 },
+        });
+
+        assert_deep_partial(lib_c?.properties.get("Value"), {
+            name: "Value",
+            text: "C",
+            hide: false,
+        });
+
+        assert_deep_partial(lib_c?.properties.get("Footprint"), {
+            name: "Footprint",
+            text: "",
+            hide: true,
+        });
+
+        assert_deep_partial(lib_c?.properties.get("Datasheet"), {
+            name: "Datasheet",
+            text: "",
+            hide: true,
+        });
+
+        // For this one, just checking that it parsed the Arc drawing
+        // correctly, since that's the only big difference between it and the
+        // first symbol.
+        const lib_c_pol = sch.lib_symbols!.symbols[1];
+        assert_deep_partial(lib_c_pol, {
+            name: "Device:C_Polarized_US",
+            children: [
+                {
+                    name: "C_Polarized_US_0_1",
+                    drawings: [
+                        {},
+                        {},
+                        {},
+                        {
+                            start: { x: -2.032, y: -1.27 },
+                            mid: { x: 0, y: -0.5572 },
+                            end: { x: 2.032, y: -1.27 },
+                            stroke: { type: "default" },
+                            fill: { type: "none" },
+                        },
+                    ],
+                },
+            ],
+        });
+
+        // For this one, we're checking the rectangle drawing
+        // and the different pin shapes.
+        const lib_ap1117 = sch.lib_symbols!.symbols[2];
+        assert_deep_partial(lib_ap1117, {
+            name: "Regulator_Linear:AP1117-15",
+            pin_names: {
+                hide: false,
+                offset: 0.254,
+            },
+            pin_numbers: {
+                hide: false,
+            },
+            children: [
+                {
+                    name: "AP1117-15_0_0",
+                    drawings: [
+                        {
+                            // This is a text object, and specifically we need to check that
+                            // the rotation ended up getting processed correctly.
+                            at: { position: { x: 0, y: 0 }, rotation: 90 },
+                        },
+                    ],
+                },
+                {
+                    name: "AP1117-15_0_1",
+                    drawings: [
+                        {
+                            start: { x: -5.08, y: -5.08 },
+                            end: { x: 5.08, y: 1.905 },
+                        },
+                    ],
+                },
+                {
+                    name: "AP1117-15_1_1",
+                    pins: [
+                        {
+                            type: "power_in",
+                            shape: "line",
+                            at: { position: { x: 0, y: -7.62 }, rotation: 90 },
+                            length: 2.54,
+                            name: {
+                                text: "GND",
+                                effects: {
+                                    font: { size: { x: 1.27, y: 1.27 } },
+                                },
+                            },
+                            number: {
+                                text: "1",
+                                effects: {
+                                    font: { size: { x: 1.27, y: 1.27 } },
+                                },
+                            },
+                        },
+                        { type: "power_out", name: { text: "VO" } },
+                        { type: "power_in", name: { text: "VI" } },
+                    ],
+                },
+            ],
+        });
+
+        // The last one is a power symbol
+        const lib_gnd = sch.lib_symbols!.symbols[3];
+        assert_deep_partial(lib_gnd, {
+            name: "power:GND",
+            power: true,
+            pin_names: { offset: 0 },
+            in_bom: true,
+            on_board: true,
+        });
+
+        assert_deep_partial(lib_gnd?.properties.get("Reference"), {
+            name: "Reference",
+            text: "#PWR",
+            hide: true,
         });
 
         assert_deep_partial(lib_gnd?.properties.get("Value"), {

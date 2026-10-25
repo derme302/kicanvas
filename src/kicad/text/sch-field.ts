@@ -10,16 +10,20 @@ import { EDAText } from "./eda-text";
 type Parent = {
     position: Vec2;
     transform: Matrix3;
+    is_symbol: boolean;
 };
 
 /**
  * Represents a symbol (or sheet) "field", such as the reference, value, or
  * other properties shown along with the symbol.
  *
- * This corresponds to and is roughly based on KiCAD's SCH_FIELD class.
+ * This corresponds to and is roughly based on KiCad's SCH_FIELD class.
  */
 export class SchField extends EDAText {
-    constructor(text: string, public parent?: Parent) {
+    constructor(
+        text: string,
+        public parent?: Parent,
+    ) {
         super(text);
     }
 
@@ -30,19 +34,19 @@ export class SchField extends EDAText {
         return this.text;
     }
 
-    /** Get effective rotation when drawing, taking into the parent position
-     * orientation, and transformation.
+    /** Get effective rotation when drawing, taking into account the parent
+     * position orientation, and transformation.
      */
     get draw_rotation() {
         let this_deg = this.text_angle.degrees;
         const parent_transform = this.parent?.transform ?? Matrix3.identity();
 
         // Note: this checks the parent's rotation based on its transform.
-        // KiCAD represents transforms with a simple 2x2 matrix which
+        // KiCad represents transforms with a simple 2x2 matrix which
         // can be made from a Matrix3 using:
         // kicad_matrix = [
         //      m.elements[0], m.elements[1], m.elements[3], m.elements[4]];
-        // KiCAD sets the transform of a symbol instance in
+        // KiCad sets the transform of a symbol instance in
         // SCH_SEXPR_PARSER::parseSchematicSymbol() to one of four values
         // depending on the orientation:
         //
@@ -78,6 +82,10 @@ export class SchField extends EDAText {
     get bounding_box(): BBox {
         const bbox = this.get_text_box();
 
+        if (!this.parent?.is_symbol) {
+            return bbox;
+        }
+
         // adjust bounding box according to parent location
         const origin = this.parent?.position ?? new Vec2(0, 0);
         const pos = this.text_pos.sub(origin);
@@ -87,14 +95,12 @@ export class SchField extends EDAText {
         begin = this.text_angle.rotate_point(begin, pos);
         end = this.text_angle.rotate_point(end, pos);
 
-        // adjust bounding box based on symbol tranform
+        // adjust bounding box based on symbol transform
 
-        if (this.parent) {
-            // Symbols have the y axis direction flipped, so the bounding
-            // box must also be flipped.
-            begin.y = mirror(begin.y, pos.y);
-            end.y = mirror(end.y, pos.y);
-        }
+        // Symbols have the y axis direction flipped, so the bounding
+        // box must also be flipped.
+        begin.y = mirror(begin.y, pos.y);
+        end.y = mirror(end.y, pos.y);
 
         // Note: Real identity matrix (without flipped y) is actually needed
         // here.

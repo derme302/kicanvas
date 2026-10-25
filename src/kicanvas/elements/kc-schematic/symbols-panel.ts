@@ -22,7 +22,7 @@ import { SchematicViewer } from "../../../viewers/schematic/viewer";
 export class KCSchematicSymbolsPanelElement extends KCUIElement {
     viewer: SchematicViewer;
 
-    @query("kc-ui-menu", true)
+    @query("kc-ui-menu")
     private menu!: KCUIMenuElement;
 
     override connectedCallback() {
@@ -35,9 +35,14 @@ export class KCSchematicSymbolsPanelElement extends KCUIElement {
     }
 
     private setup_initial_events() {
-        this.addEventListener("kc-ui-menu:select", (e) => {
-            const item = (e as CustomEvent).detail as KCUIMenuItemElement;
+        let updating_selected = false;
 
+        this.addEventListener("kc-ui-menu:select", (e) => {
+            if (updating_selected) {
+                return;
+            }
+
+            const item = (e as CustomEvent).detail as KCUIMenuItemElement;
             if (!item.name) {
                 return;
             }
@@ -49,7 +54,9 @@ export class KCSchematicSymbolsPanelElement extends KCUIElement {
         // selection changes.
         this.addDisposable(
             this.viewer.addEventListener(KiCanvasSelectEvent.type, () => {
+                updating_selected = true;
                 this.menu.selected = this.viewer.selected?.context.uuid ?? null;
+                updating_selected = false;
             }),
         );
 

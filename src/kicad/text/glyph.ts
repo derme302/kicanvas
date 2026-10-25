@@ -9,7 +9,7 @@ import { Angle, BBox, Vec2 } from "../../base/math";
 /**
  * Glyph abstract base class
  *
- * Shared between stroke and outline fonts, altough outline fonts aren't
+ * Shared between stroke and outline fonts, although outline fonts aren't
  * currently implemented.
  */
 export abstract class Glyph {
@@ -31,7 +31,10 @@ type Stroke = Vec2[];
  * Glyphs for stroke fonts.
  */
 export class StrokeGlyph extends Glyph {
-    constructor(public strokes: Stroke[], public bbox: BBox) {
+    constructor(
+        public strokes: Stroke[],
+        public bbox: BBox,
+    ) {
         super();
     }
 
@@ -43,7 +46,7 @@ export class StrokeGlyph extends Glyph {
         mirror: boolean,
         origin: Vec2,
     ): StrokeGlyph {
-        // Note: our bbox calculation differs from KiCAD's, however,
+        // Note: our bbox calculation differs from KiCad's, however,
         // when I wrote this it seems to be consistent in terms of final
         // outcome.
         const bb = this.bbox.copy();

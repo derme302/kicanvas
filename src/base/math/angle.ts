@@ -32,7 +32,7 @@ export class Angle {
     /** Round degrees to two decimal places
      *
      * A lot of math involving angles is done with degrees to two decimal places
-     * instead of radians to match KiCAD's behavior and to avoid floating point
+     * instead of radians to match KiCad's behavior and to avoid floating point
      * nonsense.
      */
     static round(degrees: number): number {
@@ -84,7 +84,7 @@ export class Angle {
     }
 
     /**
-     * Returns a new Angle representing the different of this angle and the given angle.
+     * Returns a new Angle representing the difference between this angle and the given angle.
      */
     sub(other: AngleLike) {
         const diff = this.radians - new Angle(other).radians;

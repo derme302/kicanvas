@@ -40,9 +40,11 @@ export enum LayerNames {
     anchors = ":Anchors",
     non_plated_holes = ":NonPlatedHoles",
     via_holes = ":Via:Holes",
+    pad_holes_netname = ":Pad:Holes:NetName",
     pad_holes = ":Pad:Holes",
     pad_holewalls = ":Pad:HoleWalls",
     via_holewalls = ":Via:HoleWalls",
+    pads_front_netname = ":Pads:Front:NetName",
     pads_front = ":Pads:Front",
     f_cu = "F.Cu",
     f_mask = "F.Mask",
@@ -81,6 +83,7 @@ export enum LayerNames {
     in28_cu = "In28.Cu",
     in29_cu = "In29.Cu",
     in30_cu = "In30.Cu",
+    pads_back_netname = ":Pads:Back:NetName",
     pads_back = ":Pads:Back",
     b_cu = "B.Cu",
     b_mask = "B.Mask",
@@ -159,8 +162,42 @@ function is_virtual_for(physical_layer: string, layer_name: string) {
     );
 }
 
+function is_pad_layer_for(physical_layer: string, layer_name: string) {
+    let pad_layer_prefix = ":invaild";
+
+    if (physical_layer === LayerNames.f_cu) {
+        pad_layer_prefix = ":Pads:Front";
+    } else if (physical_layer === LayerNames.b_cu) {
+        pad_layer_prefix = ":Pads:Back";
+    }
+
+    // TODO:
+    // for the thru_hole pads, it includes all copper layers,
+    // and we cannot determine here.
+    // It just work on F.Cu and B.Cu
+    const is_thru_hole =
+        layer_name === LayerNames.pad_holes_netname ||
+        layer_name === LayerNames.pad_holes ||
+        layer_name === LayerNames.non_plated_holes;
+
+    const is_pad_copper = layer_name.startsWith(pad_layer_prefix);
+    const is_pad_thru_hole = is_thru_hole && is_copper(physical_layer);
+
+    return is_pad_copper || is_pad_thru_hole;
+}
+
 function is_copper(name: string) {
     return name.endsWith(".Cu");
+}
+
+export function is_manufacturing_layer(name: string) {
+    return (
+        name === LayerNames.edge_cuts ||
+        name === LayerNames.margin ||
+        name.startsWith("F.") ||
+        name.startsWith("B.") ||
+        name.endsWith(".Cu")
+    );
 }
 
 export function* copper_layers_between(
@@ -188,7 +225,10 @@ export class LayerSet extends BaseLayerSet {
     /**
      * Create a new LayerSet
      */
-    constructor(board: KicadPCB, public theme: BoardTheme) {
+    constructor(
+        board: KicadPCB,
+        public theme: BoardTheme,
+    ) {
         super();
 
         const board_layers = new Map();
@@ -213,16 +253,29 @@ export class LayerSet extends BaseLayerSet {
             }
 
             // Pad layers require that the front or back layer is visible.
-            if (layer_name == LayerNames.pads_front) {
+            if (
+                layer_name == LayerNames.pads_front ||
+                layer_name == LayerNames.pads_front_netname
+            ) {
                 visible = () => this.by_name(LayerNames.f_cu)!.visible;
                 interactive = true;
             }
-            if (layer_name == LayerNames.pads_back) {
+
+            if (
+                layer_name == LayerNames.pads_back ||
+                layer_name == LayerNames.pads_back_netname
+            ) {
                 visible = () => this.by_name(LayerNames.b_cu)!.visible;
                 interactive = true;
             }
 
-            // Copper layers require additional virual layers for zones and
+            // Pad hole netname require that the pad holes layer is visible
+            if (layer_name == LayerNames.pad_holes_netname) {
+                visible = () => this.by_name(LayerNames.pad_holes)!.visible;
+                interactive = true;
+            }
+
+            // Copper layers require additional virtual layers for zones and
             // blind/buried vias. Those are generated here.
             // Zone virtual layers for copper layers require that the referenced
             // copper layer is visible.
@@ -306,6 +359,15 @@ export class LayerSet extends BaseLayerSet {
                 return (this.theme["background"] as Color) ?? Color.white;
             case LayerNames.pad_holewalls:
                 return (this.theme["pad_through_hole"] as Color) ?? Color.white;
+            case LayerNames.pads_front_netname:
+                // TODO theme?
+                return Color.white.with_alpha(0.8);
+            case LayerNames.pads_back_netname:
+                // TODO theme?
+                return Color.white.with_alpha(0.8);
+            case LayerNames.pad_holes_netname:
+                // TODO theme?
+                return Color.white.with_alpha(0.8);
         }
 
         let name = layer_name;
@@ -326,7 +388,7 @@ export class LayerSet extends BaseLayerSet {
     }
 
     /**
-     * @yields layers that coorespond to board layers that should be
+     * @yields layers that correspond to board layers that should be
      *      displayed in the layer selection UI
      */
     *in_ui_order() {
@@ -412,12 +474,15 @@ export class LayerSet extends BaseLayerSet {
     }
 
     *pad_layers() {
+        yield this.by_name(LayerNames.pads_front_netname)!;
         yield this.by_name(LayerNames.pads_front)!;
+        yield this.by_name(LayerNames.pads_back_netname)!;
         yield this.by_name(LayerNames.pads_back)!;
     }
 
     *pad_hole_layers() {
         yield this.by_name(LayerNames.pad_holes)!;
+        yield this.by_name(LayerNames.pad_holes_netname)!;
         yield this.by_name(LayerNames.pad_holewalls)!;
     }
 
@@ -448,7 +513,10 @@ export class LayerSet extends BaseLayerSet {
         }
 
         const matching_layers = this.query(
-            (l) => l.name == layer_name || is_virtual_for(layer_name, l.name),
+            (l) =>
+                l.name == layer_name ||
+                is_virtual_for(layer_name, l.name) ||
+                is_pad_layer_for(layer_name, l.name),
         );
 
         super.highlight(matching_layers);

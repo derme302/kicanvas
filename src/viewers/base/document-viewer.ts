@@ -5,7 +5,7 @@
 */
 
 import { BBox, Vec2 } from "../../base/math";
-import * as log from "../../base/log";
+import { Logger } from "../../base/log";
 import {
     DrawingSheet,
     type DrawingSheetDocument,
@@ -16,6 +16,9 @@ import { Grid } from "./grid";
 import type { DocumentPainter, PaintableDocument } from "./painter";
 import { ViewLayerNames, type ViewLayerSet } from "./view-layers";
 import { Viewer } from "./viewer";
+import { later } from "../../base/async";
+
+const log = new Logger("kicanvas:viewer");
 
 type ViewableDocument = DrawingSheetDocument &
     PaintableDocument & { filename: string };
@@ -28,14 +31,18 @@ export abstract class DocumentViewer<
 > extends Viewer {
     public document: DocumentT;
     public drawing_sheet: DrawingSheet;
-    public declare layers: ViewLayerSetT;
+    declare public layers: ViewLayerSetT;
     public theme: ThemeT;
 
     protected painter: PainterT;
     protected grid: Grid;
 
-    constructor(canvas: HTMLCanvasElement, theme: ThemeT) {
-        super(canvas);
+    constructor(
+        canvas: HTMLCanvasElement,
+        interactive: boolean,
+        theme: ThemeT,
+    ) {
+        super(canvas, interactive);
         this.theme = theme;
     }
 
@@ -46,39 +53,41 @@ export abstract class DocumentViewer<
     }
 
     override async load(src: DocumentT) {
+        await this.setup_finished;
+
         if (this.document == src) {
             return;
         }
 
-        log.start(`Loading ${src.filename} into viewer`);
+        log.info(`Loading ${src.filename} into viewer`);
 
         this.document = src;
         this.paint();
 
         // Wait for a valid viewport size
-        log.message("Waiting for viewport");
-        await this.viewport.ready;
-        this.viewport.bounds = this.drawing_sheet.page_bbox.grow(50);
+        later(async () => {
+            log.info("Waiting for viewport");
+            await this.viewport.ready;
+            this.viewport.bounds = this.drawing_sheet.page_bbox.grow(50);
 
-        // Position the camera and draw the scene.
-        log.message("Positioning camera");
-        this.zoom_to_page();
+            // Position the camera and draw the scene.
+            log.info("Positioning camera");
+            this.zoom_to_page();
 
-        // Mark the viewer as loaded and notify event listeners
-        this.resolve_loaded(true);
+            // Mark the viewer as loaded and notify event listeners
+            this.resolve_loaded(true);
 
-        // Deselect any selected items.
-        if (this.selected) {
-            this.selected = null;
-        }
+            // Deselect any selected items.
+            if (this.selected) {
+                this.selected = null;
+            }
 
-        // Draw
-        this.draw();
-
-        log.finish();
+            // Draw
+            this.draw();
+        });
     }
 
-    public paint() {
+    public override paint() {
         if (!this.document) {
             return;
         }
@@ -87,30 +96,30 @@ export abstract class DocumentViewer<
         this.renderer.background_color = this.theme.background;
 
         // Load the default drawing sheet.
-        log.message("Loading drawing sheet");
+        log.info("Loading drawing sheet");
         if (!this.drawing_sheet) {
             this.drawing_sheet = DrawingSheet.default();
         }
         this.drawing_sheet.document = this.document;
 
         // Setup graphical layers
-        log.message("Creating layers");
+        log.info("Creating layers");
         this.disposables.disposeAndRemove(this.layers);
         this.layers = this.disposables.add(this.create_layer_set());
 
         // Paint the board
-        log.message("Painting items");
+        log.info("Painting items");
         this.painter = this.create_painter();
         this.painter.paint(this.document);
 
         // Paint the drawing sheet
-        log.message("Painting drawing sheet");
+        log.info("Painting drawing sheet");
         new DrawingSheetPainter(this.renderer, this.layers, this.theme).paint(
             this.drawing_sheet,
         );
 
         // Create the grid
-        log.message("Painting grid");
+        log.info("Painting grid");
         this.grid = new Grid(
             this.renderer,
             this.viewport.camera,

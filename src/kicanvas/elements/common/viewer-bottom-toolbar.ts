@@ -4,13 +4,13 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { css, html } from "../../base/web-components";
-import { KCUIElement, type KCUIButtonElement } from "../../kc-ui";
+import { css, html } from "../../../base/web-components";
+import { KCUIElement, type KCUIButtonElement } from "../../../kc-ui";
 import {
     KiCanvasMouseMoveEvent,
     KiCanvasSelectEvent,
-} from "../../viewers/base/events";
-import type { Viewer } from "../../viewers/base/viewer";
+} from "../../../viewers/base/events";
+import type { Viewer } from "../../../viewers/base/viewer";
 
 export class KCViewerBottomToolbarElement extends KCUIElement {
     static override styles = [
@@ -19,13 +19,13 @@ export class KCViewerBottomToolbarElement extends KCUIElement {
             output {
                 width: unset;
                 margin: unset;
-                padding: 0.5rem;
+                padding: 0.5em;
                 color: var(--button-toolbar-fg);
                 background: var(--button-toolbar-bg);
                 border: 1px solid var(--button-toolbar-bg);
-                border-radius: 0.25rem;
+                border-radius: 0.25em;
                 font-weight: 300;
-                font-size: 0.9rem;
+                font-size: 0.9em;
                 box-shadow: var(--input-hover-shadow);
                 user-select: none;
             }
@@ -80,9 +80,11 @@ export class KCViewerBottomToolbarElement extends KCUIElement {
 
     override render() {
         this.#position_elm = html`<output
+            slot="left"
             class="toolbar"></output>` as HTMLOutputElement;
 
         this.#zoom_to_page_btn = html`<kc-ui-button
+            slot="right"
             variant="toolbar"
             name="zoom_to_page"
             title="zoom to page"
@@ -90,6 +92,7 @@ export class KCViewerBottomToolbarElement extends KCUIElement {
         </kc-ui-button>` as KCUIButtonElement;
 
         this.#zoom_to_selection_btn = html` <kc-ui-button
+            slot="right"
             variant="toolbar"
             name="zoom_to_selection"
             title="zoom to selection"
@@ -100,10 +103,8 @@ export class KCViewerBottomToolbarElement extends KCUIElement {
         this.update_position();
 
         return html`<kc-ui-floating-toolbar location="bottom">
-            <div slot="left">${this.#position_elm}</div>
-            <div slot="right" class="button-group margin-left">
-                ${this.#zoom_to_selection_btn} ${this.#zoom_to_page_btn}
-            </div>
+            ${this.#position_elm} ${this.#zoom_to_selection_btn}
+            ${this.#zoom_to_page_btn}
         </kc-ui-floating-toolbar>`;
     }
 }

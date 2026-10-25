@@ -5,6 +5,7 @@
 */
 
 import { Angle, BBox, Arc as MathArc, Matrix3, Vec2 } from "../base/math";
+import type { Project } from "../kicanvas/project";
 import {
     At,
     Effects,
@@ -12,6 +13,12 @@ import {
     Stroke,
     TitleBlock,
     expand_text_vars,
+    EmbeddedFile,
+    StrokeParams,
+    Net,
+    type HasNetInfo,
+    type HasUniqueID,
+    type HasStrokeParams,
 } from "./common";
 import { P, T, parse_expr, type Parseable } from "./parser";
 import type { List } from "./tokenizer";
@@ -26,9 +33,14 @@ export type Drawing =
     | Dimension;
 
 export class KicadPCB {
+    project?: Project;
     version: number;
     generator?: string;
-    general?: { thickness: number };
+    generator_version?: string;
+    general? = {
+        thickness: 1.6,
+        legacy_teardrops: false,
+    };
     paper?: Paper;
     title_block = new TitleBlock();
     setup?: Setup;
@@ -41,8 +53,13 @@ export class KicadPCB {
     vias: Via[] = [];
     drawings: Drawing[] = [];
     groups: Group[] = [];
+    embedded_fonts: boolean = false;
+    embedded_files: EmbeddedFile[] = [];
 
-    constructor(public filename: string, expr: Parseable) {
+    constructor(
+        public filename: string,
+        expr: Parseable,
+    ) {
         Object.assign(
             this,
             parse_expr(
@@ -50,7 +67,13 @@ export class KicadPCB {
                 P.start("kicad_pcb"),
                 P.pair("version", T.number),
                 P.pair("generator", T.string),
-                P.object("general", {}, P.pair("thickness", T.number)),
+                P.pair("generator_version", T.string),
+                P.object(
+                    "general",
+                    {},
+                    P.pair("thickness", T.number),
+                    P.pair("legacy_teardrops", T.boolean),
+                ),
                 P.item("paper", Paper),
                 P.item("title_block", TitleBlock),
                 P.list("layers", T.item(Layer)),
@@ -67,20 +90,25 @@ export class KicadPCB {
                     "footprint",
                     T.item(Footprint, this),
                 ),
-                P.collection("zones", "zone", T.item(Zone)),
-                P.collection("segments", "segment", T.item(LineSegment)),
-                P.collection("segments", "arc", T.item(ArcSegment)),
-                P.collection("vias", "via", T.item(Via)),
+                P.collection("zones", "zone", T.item(Zone, this)),
+                P.collection("segments", "segment", T.item(LineSegment, this)),
+                P.collection("segments", "arc", T.item(ArcSegment, this)),
+                P.collection("vias", "via", T.item(Via, this)),
                 P.collection("drawings", "dimension", T.item(Dimension, this)),
-                P.collection("drawings", "gr_line", T.item(GrLine)),
-                P.collection("drawings", "gr_circle", T.item(GrCircle)),
-                P.collection("drawings", "gr_arc", T.item(GrArc)),
-                P.collection("drawings", "gr_poly", T.item(GrPoly)),
-                P.collection("drawings", "gr_rect", T.item(GrRect)),
+                P.collection("drawings", "gr_line", T.item(GrLine, this)),
+                P.collection("drawings", "gr_circle", T.item(GrCircle, this)),
+                P.collection("drawings", "gr_arc", T.item(GrArc, this)),
+                P.collection("drawings", "gr_poly", T.item(GrPoly, this)),
+                P.collection("drawings", "gr_rect", T.item(GrRect, this)),
                 P.collection("drawings", "gr_text", T.item(GrText, this)),
                 P.collection("groups", "group", T.item(Group)),
+                P.pair("embedded_fonts", T.boolean),
+                P.list("embedded_files", T.item(EmbeddedFile)),
             ),
         );
+
+        // sort the array by net_number
+        this.nets.sort((a, b) => a.number - b.number);
     }
 
     *items() {
@@ -114,13 +142,17 @@ export class KicadPCB {
         return bbox;
     }
 
-    find_footprint(uuid_or_ref: string) {
+    find_footprint(uuid_or_ref: string): Footprint | null {
         for (const fp of this.footprints) {
-            if (fp.uuid == uuid_or_ref || fp.reference == uuid_or_ref) {
+            if (fp.unique_id == uuid_or_ref || fp.reference == uuid_or_ref) {
                 return fp;
             }
         }
         return null;
+    }
+
+    get_netname_by_number(net_number: number): string | undefined {
+        return this.nets[net_number]?.name;
     }
 }
 
@@ -141,16 +173,20 @@ export class Property {
     }
 }
 
-export class LineSegment {
+export class LineSegment implements HasUniqueID, HasNetInfo {
     start: Vec2;
     end: Vec2;
     width: number;
     layer: string;
     net: number;
     locked = false;
-    tstamp: string;
+    uuid?: string;
+    tstamp?: string;
 
-    constructor(expr: Parseable) {
+    constructor(
+        expr: Parseable,
+        public parent: KicadPCB,
+    ) {
         /*
         (segment
             (start 119.1 82.943)
@@ -171,13 +207,22 @@ export class LineSegment {
                 P.pair("layer", T.string),
                 P.pair("net", T.number),
                 P.atom("locked"),
+                P.pair("uuid", T.string),
                 P.pair("tstamp", T.string),
             ),
         );
     }
+
+    get unique_id(): string | undefined {
+        return this.uuid ?? this.tstamp;
+    }
+
+    get netname(): string | undefined {
+        return this.parent.get_netname_by_number(this.net);
+    }
 }
 
-export class ArcSegment {
+export class ArcSegment implements HasUniqueID, HasNetInfo {
     start: Vec2;
     mid: Vec2;
     end: Vec2;
@@ -185,9 +230,13 @@ export class ArcSegment {
     layer: string;
     net: number;
     locked = false;
-    tstamp: string;
+    tstamp?: string;
+    uuid?: string;
 
-    constructor(expr: Parseable) {
+    constructor(
+        expr: Parseable,
+        public parent: KicadPCB,
+    ) {
         /*
         (arc
             (start 115.25 59.05)
@@ -211,12 +260,21 @@ export class ArcSegment {
                 P.pair("net", T.number),
                 P.atom("locked"),
                 P.pair("tstamp", T.string),
+                P.pair("uuid", T.string),
             ),
         );
     }
+
+    get unique_id(): string | undefined {
+        return this.uuid ?? this.tstamp;
+    }
+
+    get netname(): string | undefined {
+        return this.parent.get_netname_by_number(this.net);
+    }
 }
 
-export class Via {
+export class Via implements HasUniqueID, HasNetInfo {
     type: "blind" | "micro" | "through-hole" = "through-hole";
     at: At;
     size: number;
@@ -227,9 +285,13 @@ export class Via {
     locked = false;
     free = false;
     net: number;
-    tstamp: string;
+    tstamp?: string;
+    uuid?: string;
 
-    constructor(expr: Parseable) {
+    constructor(
+        expr: Parseable,
+        public parent: KicadPCB,
+    ) {
         Object.assign(
             this,
             parse_expr(
@@ -246,12 +308,21 @@ export class Via {
                 P.atom("remove_unused_layers"),
                 P.atom("keep_end_layers"),
                 P.pair("tstamp", T.string),
+                P.pair("uuid", T.string),
             ),
         );
     }
+
+    get unique_id(): string | undefined {
+        return this.uuid ?? this.tstamp;
+    }
+
+    get netname(): string | undefined {
+        return this.parent.get_netname_by_number(this.net);
+    }
 }
 
-export class Zone {
+export class Zone implements HasUniqueID {
     locked = false;
     net: number;
     net_name: string;
@@ -270,9 +341,13 @@ export class Zone {
     fill: ZoneFill;
     polygons: Poly[];
     filled_polygons: FilledPolygon[];
-    tstamp: string;
+    tstamp?: string;
+    uuid?: string;
 
-    constructor(expr: Parseable, public parent?: KicadPCB | Footprint) {
+    constructor(
+        expr: Parseable,
+        public parent?: KicadPCB | Footprint,
+    ) {
         Object.assign(
             this,
             parse_expr(
@@ -309,8 +384,13 @@ export class Zone {
                     T.item(FilledPolygon),
                 ),
                 P.pair("tstamp", T.string),
+                P.pair("uuid", T.string),
             ),
         );
+    }
+
+    get unique_id(): string | undefined {
+        return this.uuid ?? this.tstamp;
     }
 }
 
@@ -416,6 +496,7 @@ export class Setup {
     solder_mask_min_width: number;
     pad_to_paste_clearance: number;
     pad_to_paste_clearance_ratio: number;
+    allow_soldermask_bridges_in_footprints = false;
     aux_axis_origin: Vec2;
     grid_origin: Vec2;
     pcbplotparams: PCBPlotParams;
@@ -431,6 +512,7 @@ export class Setup {
                 P.pair("solder_mask_min_width", T.number),
                 P.pair("pad_to_paste_clearance", T.number),
                 P.pair("pad_to_paste_clearance_ratio", T.number),
+                P.pair("allow_soldermask_bridges_in_footprints", T.boolean),
                 P.vec2("aux_axis_origin"),
                 P.vec2("grid_origin"),
                 P.item("pcbplotparams", PCBPlotParams),
@@ -458,6 +540,10 @@ export class PCBPlotParams {
     hpglpennumber: number;
     hpglpenspeed: number;
     hpglpendiameter: number;
+    pdf_front_fp_property_popups = true;
+    pdf_back_fp_property_popups = true;
+    pdf_metadata = true;
+    pdf_single_document = false;
     dxfpolygonmode = false;
     dxfimperialunits = false;
     dxfusepcbnewfont = false;
@@ -468,6 +554,11 @@ export class PCBPlotParams {
     plotinvisibletext = false;
     sketchpadsonfab = false;
     subtractmaskfromsilk = false;
+    plot_black_and_white = true;
+    plotpadnumbers = false;
+    hidednponfab = false;
+    sketchdnponfab = true;
+    crossoutdnponfab = true;
     outputformat: number;
     mirror = false;
     drillshape: number;
@@ -500,6 +591,10 @@ export class PCBPlotParams {
                 P.pair("hpglpennumber", T.number),
                 P.pair("hpglpenspeed", T.number),
                 P.pair("hpglpendiameter", T.number),
+                P.pair("pdf_front_fp_property_popups", T.boolean),
+                P.pair("pdf_back_fp_property_popups", T.boolean),
+                P.pair("pdf_metadata", T.boolean),
+                P.pair("pdf_single_document", T.boolean),
                 P.pair("dxfpolygonmode", T.boolean),
                 P.pair("dxfimperialunits", T.boolean),
                 P.pair("dxfusepcbnewfont", T.boolean),
@@ -510,6 +605,11 @@ export class PCBPlotParams {
                 P.pair("plotinvisibletext", T.boolean),
                 P.pair("sketchpadsonfab", T.boolean),
                 P.pair("subtractmaskfromsilk", T.boolean),
+                P.pair("plotpadnumbers", T.boolean),
+                P.pair("plot_black_and_white", T.boolean),
+                P.pair("hidednponfab", T.boolean),
+                P.pair("sketchdnponfab", T.boolean),
+                P.pair("crossoutdnponfab", T.boolean),
                 P.pair("outputformat", T.number),
                 P.pair("mirror", T.boolean),
                 P.pair("drillshape", T.number),
@@ -575,29 +675,12 @@ export class StackupLayer {
     }
 }
 
-export class Net {
-    number: number;
-    name: string;
-
-    constructor(expr: Parseable) {
-        // (net 2 "+3V3")
-        Object.assign(
-            this,
-            parse_expr(
-                expr,
-                P.start("net"),
-                P.positional("number", T.number),
-                P.positional("name", T.string),
-            ),
-        );
-    }
-}
-
-export class Dimension {
+export class Dimension implements HasUniqueID {
     locked = false;
     type: "aligned" | "leader" | "center" | "orthogonal" | "radial";
     layer: string;
-    tstamp: string;
+    tstamp?: string;
+    uuid?: string;
     pts: Vec2[];
     height: number;
     orientation: number;
@@ -606,7 +689,10 @@ export class Dimension {
     format: DimensionFormat;
     style: DimensionStyle;
 
-    constructor(expr: Parseable, public parent: KicadPCB) {
+    constructor(
+        expr: Parseable,
+        public parent: KicadPCB,
+    ) {
         Object.assign(
             this,
             parse_expr(
@@ -616,6 +702,7 @@ export class Dimension {
                 P.pair("type", T.string),
                 P.pair("layer", T.string),
                 P.pair("tstamp", T.string),
+                P.pair("uuid", T.string),
                 P.list("pts", T.vec2),
                 P.pair("height", T.number),
                 P.pair("orientation", T.number),
@@ -637,6 +724,10 @@ export class Dimension {
 
     get end(): Vec2 {
         return this.pts.at(-1) ?? new Vec2(0, 0);
+    }
+
+    get unique_id(): string | undefined {
+        return this.uuid ?? this.tstamp;
     }
 }
 
@@ -720,9 +811,16 @@ export class DimensionStyle {
     }
 }
 
-type FootprintDrawings = FpLine | FpCircle | FpArc | FpPoly | FpRect | FpText;
+type FootprintDrawings =
+    | FpLine
+    | FpCircle
+    | FpArc
+    | FpPoly
+    | FpRect
+    | FpText
+    | SymbolProperty;
 
-export class Footprint {
+export class Footprint implements HasUniqueID {
     at: At;
     reference: string;
     value: string;
@@ -733,12 +831,15 @@ export class Footprint {
     placed = false;
     layer: string;
     tedit: string;
-    tstamp: string;
+    tstamp?: string;
+    uuid?: string;
     descr: string;
     tags: string;
     path: string;
     autoplace_cost90: number;
     autoplace_cost180: number;
+    sheetname?: string;
+    sheetfile?: string;
     solder_mask_margin: number;
     solder_paste_margin: number;
     solder_paste_ratio: number;
@@ -765,15 +866,21 @@ export class Footprint {
         allow_solder_mask_bridges: false,
         allow_missing_courtyard: false,
     };
-    properties: Record<string, string> = {};
+    properties: Record<string, SymbolProperty> = {};
     drawings: FootprintDrawings[] = [];
     pads: Pad[] = [];
     #pads_by_number = new Map<string, Pad>();
     zones: Zone[] = [];
     models: Model[] = [];
+    embedded_fonts: boolean = false;
+    embedded_files: EmbeddedFile[] = [];
+    net_tie_pad_groups?: string;
     #bbox: BBox;
 
-    constructor(expr: Parseable, public parent: KicadPCB) {
+    constructor(
+        expr: Parseable,
+        public parent: KicadPCB,
+    ) {
         Object.assign(
             this,
             parse_expr(
@@ -787,6 +894,9 @@ export class Footprint {
                 P.pair("layer", T.string),
                 P.pair("tedit", T.string),
                 P.pair("tstamp", T.string),
+                P.pair("uuid", T.string),
+                P.pair("sheetname", T.string),
+                P.pair("sheetfile", T.string),
                 P.item("at", At),
                 P.pair("descr", T.string),
                 P.pair("tags", T.string),
@@ -800,6 +910,7 @@ export class Footprint {
                 P.pair("zone_connect", T.number),
                 P.pair("thermal_width", T.number),
                 P.pair("thermal_gap", T.number),
+                P.pair("net_tie_pad_groups", T.string),
                 P.object(
                     "attr",
                     this.attr,
@@ -812,7 +923,7 @@ export class Footprint {
                     P.atom("allow_solder_mask_bridges"),
                     P.atom("allow_missing_courtyard"),
                 ),
-                P.dict("properties", "property", T.string),
+                P.dict("properties", "property", T.item(SymbolProperty, this)),
                 P.collection("drawings", "fp_line", T.item(FpLine, this)),
                 P.collection("drawings", "fp_circle", T.item(FpCircle, this)),
                 P.collection("drawings", "fp_arc", T.item(FpArc, this)),
@@ -822,6 +933,8 @@ export class Footprint {
                 P.collection("zones", "zone", T.item(Zone, this)),
                 P.collection("models", "model", T.item(Model)),
                 P.collection("pads", "pad", T.item(Pad, this)),
+                P.pair("embedded_fonts", T.boolean),
+                P.list("embedded_files", T.item(EmbeddedFile)),
             ),
         );
 
@@ -829,6 +942,7 @@ export class Footprint {
             this.#pads_by_number.set(pad.number, pad);
         }
 
+        // https://dev-docs.kicad.org/en/file-formats/sexpr-intro/index.html#_footprint_text
         for (const d of this.drawings) {
             if (!(d instanceof FpText)) {
                 continue;
@@ -841,16 +955,33 @@ export class Footprint {
                 this.value = d.text;
             }
         }
+
+        // KiCad correctly parses both definitions
+        //     (fp_text reference XXXX) and (property "Reference" "XXXX")
+        // https://dev-docs.kicad.org/en/file-formats/sexpr-intro/index.html#_symbol_properties
+        for (const [prop_name, prop] of Object.entries(this.properties)) {
+            if (this.reference === undefined && prop_name == "Reference") {
+                this.reference = prop.value;
+            }
+
+            if (this.value === undefined && prop_name == "Value") {
+                this.value = prop.value;
+            }
+        }
     }
 
-    get uuid() {
-        return this.tstamp;
+    get unique_id(): string | undefined {
+        return this.uuid ?? this.tstamp;
     }
 
     *items(): Generator<FootprintDrawings | Pad | Zone, void, undefined> {
         yield* this.drawings ?? [];
         yield* this.zones ?? [];
         yield* this.pads.values() ?? [];
+
+        yield* Object.values(this.properties).filter(
+            (prop) => prop.has_symbol_prop,
+        );
     }
 
     resolve_text_var(name: string): string | undefined {
@@ -886,7 +1017,7 @@ export class Footprint {
         }
 
         if (this.properties[name] !== undefined) {
-            return this.properties[name]!;
+            return this.properties[name]!.value;
         }
 
         return this.parent.resolve_text_var(name);
@@ -921,7 +1052,7 @@ export class Footprint {
             ).rotate_self(Angle.deg_to_rad(this.at.rotation));
 
             for (const item of this.drawings) {
-                if (item instanceof FpText) {
+                if (item instanceof FpText || item instanceof SymbolProperty) {
                     continue;
                 }
 
@@ -935,11 +1066,99 @@ export class Footprint {
     }
 }
 
-class GraphicItem {
-    parent?: Footprint;
+export class SymbolProperty implements HasUniqueID {
+    has_symbol_prop: boolean;
+
+    // generic properties
+    // https://dev-docs.kicad.org/en/file-formats/sexpr-intro/index.html#_properties
+    value: string;
+
+    // symbol properties
+    // https://dev-docs.kicad.org/en/file-formats/sexpr-intro/index.html#_symbol_properties
+    id: number = 0;
+    unlocked = false;
+    hide = false;
+    at: At = new At();
+    effects: Effects = new Effects();
+    layer: string = "F.SilkS";
+    uuid?: string;
+
+    constructor(
+        expr: Parseable,
+        public parent: Footprint,
+    ) {
+        // for some reasons, I cannot get kicad_version here
+        // const is_newer = parent.parent.version >= 20240108;
+        const is_newer = expr instanceof Array && expr.length > 3;
+
+        if (is_newer) {
+            this.has_symbol_prop = true;
+            // parsed as 'symbol_property' node
+            Object.assign(
+                this,
+                parse_expr(
+                    expr,
+                    P.positional("value", T.string),
+                    P.pair("id", T.number),
+                    P.item("at", At),
+                    P.pair("layer", T.string),
+                    P.pair("uuid", T.string),
+                    P.atom("unlocked"),
+                    P.atom("hide"),
+                    P.item("effects", Effects),
+                ),
+            );
+        } else {
+            this.has_symbol_prop = false;
+            // parsed as 'property' node
+            Object.assign(
+                this,
+                parse_expr(expr, P.positional("value", T.string)),
+            );
+        }
+    }
+
+    get shown_text() {
+        return expand_text_vars(this.value, this.parent);
+    }
+
+    get unique_id(): string | undefined {
+        return this.uuid;
+    }
+}
+
+/** Base class for Line, Circle, and others which have 'stroke' property. */
+class GraphicItem implements HasUniqueID, HasStrokeParams {
+    parent?: Footprint | KicadPCB;
     layer: string;
-    tstamp: string;
+    uuid?: string;
+    tstamp?: string;
     locked = false;
+    stroke: Stroke = Stroke.default_value();
+
+    get unique_id(): string | undefined {
+        return this.uuid ?? this.tstamp;
+    }
+
+    get stroke_params(): StrokeParams {
+        let pcb = undefined;
+        if (this.parent instanceof KicadPCB) {
+            pcb = this.parent;
+        } else if (this.parent instanceof Footprint) {
+            pcb = this.parent.parent;
+        }
+
+        // get plot_cfg from pcb
+        const plot_cfg = pcb?.setup?.pcbplotparams;
+
+        // dashed_line_gap_ratio = 3, dashed_line_dash_ratio = 12
+        // is the default values from KiCad
+        return {
+            stroke: this.stroke,
+            dashed_line_gap_ratio: plot_cfg?.dashed_line_gap_ratio ?? 3,
+            dashed_line_dash_ratio: plot_cfg?.dashed_line_dash_ratio ?? 12,
+        };
+    }
 
     /**
      * Get the nominal bounding box for the item. This does not include any
@@ -956,9 +1175,11 @@ export class Line extends GraphicItem {
     start: Vec2;
     end: Vec2;
     width: number;
-    stroke: Stroke;
 
-    constructor(expr: Parseable, public override parent?: Footprint) {
+    constructor(
+        expr: Parseable,
+        public override parent?: Footprint | KicadPCB,
+    ) {
         super();
 
         const static_this = this.constructor as typeof Line;
@@ -973,6 +1194,7 @@ export class Line extends GraphicItem {
                 P.vec2("start"),
                 P.vec2("end"),
                 P.pair("width", T.number),
+                P.pair("uuid", T.string),
                 P.pair("tstamp", T.string),
                 P.item("stroke", Stroke),
             ),
@@ -1000,9 +1222,11 @@ export class Circle extends GraphicItem {
     end: Vec2;
     width: number;
     fill: string;
-    stroke: Stroke;
 
-    constructor(expr: Parseable, public override parent?: Footprint) {
+    constructor(
+        expr: Parseable,
+        public override parent?: Footprint | KicadPCB,
+    ) {
         super();
 
         const static_this = this.constructor as typeof Circle;
@@ -1018,6 +1242,7 @@ export class Circle extends GraphicItem {
                 P.pair("width", T.number),
                 P.pair("fill", T.string),
                 P.pair("layer", T.string),
+                P.pair("uuid", T.string),
                 P.pair("tstamp", T.string),
                 P.item("stroke", Stroke),
             ),
@@ -1050,10 +1275,12 @@ export class Arc extends GraphicItem {
     mid: Vec2;
     end: Vec2;
     width: number;
-    stroke: Stroke;
     #arc: MathArc;
 
-    constructor(expr: Parseable, public override parent?: Footprint) {
+    constructor(
+        expr: Parseable,
+        public override parent?: Footprint | KicadPCB,
+    ) {
         super();
 
         const static_this = this.constructor as typeof Arc;
@@ -1068,6 +1295,7 @@ export class Arc extends GraphicItem {
             P.vec2("end"),
             P.pair("angle", T.number),
             P.pair("width", T.number),
+            P.pair("uuid", T.string),
             P.pair("tstamp", T.string),
             P.item("stroke", Stroke),
         );
@@ -1129,16 +1357,52 @@ export class FpArc extends Arc {
     static override expr_start = "fp_arc";
 }
 
+export class PolyArc {
+    start: Vec2;
+    mid: Vec2;
+    end: Vec2;
+    #arc: MathArc;
+
+    constructor(expr: Parseable) {
+        Object.assign(
+            this,
+            parse_expr(
+                expr,
+                P.start("arc"),
+                P.vec2("start"),
+                P.vec2("mid"),
+                P.vec2("end"),
+            ),
+        );
+
+        this.#arc = MathArc.from_three_points(this.start, this.mid, this.end);
+    }
+
+    get arc() {
+        return this.#arc;
+    }
+
+    get bbox(): BBox {
+        return this.#arc.bbox;
+    }
+}
+
+export type PolyPtsItem = Vec2 | PolyArc;
+
 export class Poly extends GraphicItem {
     static expr_start = "polygon";
 
-    pts: Vec2[];
+    pts: PolyPtsItem[];
     width: number;
     fill: string;
     island: boolean;
-    stroke: Stroke;
 
-    constructor(expr: Parseable, public override parent?: Footprint) {
+    #polyline_pts: Vec2[];
+
+    constructor(
+        expr: Parseable,
+        public override parent?: Footprint | KicadPCB,
+    ) {
         super();
 
         const static_this = this.constructor as typeof Poly;
@@ -1151,19 +1415,40 @@ export class Poly extends GraphicItem {
                 P.atom("locked"),
                 P.pair("layer", T.string),
                 P.atom("island"),
-                P.list("pts", T.vec2),
+                P.list(
+                    "pts",
+                    T.choice(["xy", T.vec2], ["arc", T.item(PolyArc)]),
+                ),
                 P.pair("width", T.number),
                 P.pair("fill", T.string),
+                P.pair("uuid", T.string),
                 P.pair("tstamp", T.string),
                 P.item("stroke", Stroke),
             ),
         );
 
         this.width ??= this.stroke?.width || 0;
+
+        // Convert all PolyArc to Vec2
+        // The `arc` node in pts is undocumented in the following link:
+        // https://dev-docs.kicad.org/en/file-formats/sexpr-intro/index.html#_footprint_polygon
+        // But it is used in the kicad code, it just converts the arc to a polyline
+        // https://gitlab.com/kicad/code/kicad/-/blob/master/libs/kimath/src/geometry/shape_line_chain.cpp#L1613
+        this.#polyline_pts = this.pts.flatMap((pt) => {
+            if (pt instanceof Vec2) {
+                return [pt];
+            } else {
+                return pt.arc.to_polyline();
+            }
+        });
+    }
+
+    get polyline() {
+        return this.#polyline_pts;
     }
 
     override get bbox(): BBox {
-        return BBox.from_points(this.pts);
+        return BBox.from_points(this.#polyline_pts);
     }
 }
 
@@ -1186,9 +1471,11 @@ export class Rect extends GraphicItem {
     end: Vec2;
     width: number;
     fill: string;
-    stroke: Stroke;
 
-    constructor(expr: Parseable, public override parent?: Footprint) {
+    constructor(
+        expr: Parseable,
+        public override parent?: Footprint | KicadPCB,
+    ) {
         super();
 
         const static_this = this.constructor as typeof Rect;
@@ -1204,6 +1491,7 @@ export class Rect extends GraphicItem {
                 P.pair("layer", T.string),
                 P.pair("width", T.number),
                 P.pair("fill", T.string),
+                P.pair("uuid", T.string),
                 P.pair("tstamp", T.string),
                 P.item("stroke", Stroke),
             ),
@@ -1248,7 +1536,7 @@ export class TextRenderCache {
     }
 }
 
-export class Text {
+export class Text implements HasUniqueID {
     parent?: Footprint | Dimension | KicadPCB;
     text: string;
     at: At;
@@ -1256,7 +1544,8 @@ export class Text {
     unlocked = false;
     hide = false;
     effects = new Effects();
-    tstamp: string;
+    tstamp?: string;
+    uuid?: string;
     render_cache: TextRenderCache;
 
     static common_expr_defs = [
@@ -1270,6 +1559,7 @@ export class Text {
             P.atom("knockout"),
         ),
         P.pair("tstamp", T.string),
+        P.pair("uuid", T.string),
         P.item("effects", Effects),
         P.item("render_cache", TextRenderCache),
     ];
@@ -1277,12 +1567,20 @@ export class Text {
     get shown_text() {
         return expand_text_vars(this.text, this.parent);
     }
+
+    get unique_id(): string | undefined {
+        return this.uuid ?? this.tstamp;
+    }
 }
 
 export class FpText extends Text {
     type: "reference" | "value" | "user";
+    locked: boolean = false;
 
-    constructor(expr: Parseable, public override parent?: Footprint) {
+    constructor(
+        expr: Parseable,
+        public override parent?: Footprint,
+    ) {
         super();
 
         Object.assign(
@@ -1290,6 +1588,7 @@ export class FpText extends Text {
             parse_expr(
                 expr,
                 P.start("fp_text"),
+                P.atom("locked"),
                 P.positional("type", T.string),
                 P.positional("text", T.string),
                 ...Text.common_expr_defs,
@@ -1299,6 +1598,8 @@ export class FpText extends Text {
 }
 
 export class GrText extends Text {
+    locked: boolean = false;
+
     constructor(
         expr: Parseable,
         public override parent: Footprint | Dimension | KicadPCB,
@@ -1310,6 +1611,7 @@ export class GrText extends Text {
             parse_expr(
                 expr,
                 P.start("gr_text"),
+                P.atom("locked"),
                 P.positional("text", T.string),
                 ...Text.common_expr_defs,
             ),
@@ -1317,7 +1619,7 @@ export class GrText extends Text {
     }
 }
 
-export class Pad {
+export class Pad implements HasUniqueID, HasNetInfo {
     number: string; // I hate this
     type: "thru_hole" | "smd" | "connect" | "np_thru_hole" = "thru_hole";
     shape: "circle" | "rect" | "oval" | "trapezoid" | "roundrect" | "custom";
@@ -1348,8 +1650,14 @@ export class Pad {
     net: Net;
     options: PadOptions;
     primitives: (GrLine | GrCircle | GrArc | GrRect | GrPoly)[];
+    uuid?: string;
+    tstamp?: string;
+    remove_unused_layers: boolean = false;
 
-    constructor(expr: Parseable, public parent: Footprint) {
+    constructor(
+        expr: Parseable,
+        public parent: Footprint,
+    ) {
         const parsed = parse_expr(
             expr,
             P.start("pad"),
@@ -1384,6 +1692,8 @@ export class Pad {
             P.pair("thermal_bridge_angle", T.number),
             P.pair("zone_connect", T.number),
             P.pair("tstamp", T.string),
+            P.pair("uuid", T.string),
+            P.pair("remove_unused_layers", T.boolean),
             P.item("drill", PadDrill),
             P.item("net", Net),
             P.item("options", PadOptions),
@@ -1402,6 +1712,15 @@ export class Pad {
         );
 
         Object.assign(this, parsed);
+    }
+
+    get unique_id(): string | undefined {
+        return this.uuid ?? this.tstamp;
+    }
+
+    get netname(): string | undefined {
+        // assert: pcb.net[this.net.number] !== undefined
+        return this.net?.name;
     }
 }
 
@@ -1468,9 +1787,10 @@ export class Model {
     }
 }
 
-export class Group {
+export class Group implements HasUniqueID {
     name: string;
-    id: string;
+    id?: string;
+    uuid?: string;
     locked = false;
     members: string[];
 
@@ -1483,8 +1803,13 @@ export class Group {
                 P.positional("name", T.string),
                 P.atom("locked"),
                 P.pair("id", T.string),
+                P.pair("uuid", T.string),
                 P.list("members", T.string),
             ),
         );
+    }
+
+    get unique_id(): string | undefined {
+        return this.uuid ?? this.id;
     }
 }

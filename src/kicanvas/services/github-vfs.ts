@@ -4,101 +4,128 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { initiate_download } from "../../base/dom/download";
-import { basename, extension } from "../../base/paths";
-import { GitHub, GitHubUserContent } from "./github";
-import { VirtualFileSystem } from "./vfs";
+import {
+    basename,
+    dirname,
+    extension,
+    normalize_join,
+    based_on,
+} from "../../base/paths";
+import { GitHub, GitHubUserContent, type GitHubURLInfo } from "./github";
+import { FileSystemBase, type FileEntry } from "./vfs";
 
-const kicad_extensions = ["kicad_pcb", "kicad_pro", "kicad_sch"];
 const gh_user_content = new GitHubUserContent();
 const gh = new GitHub();
 
 /**
  * Virtual file system for GitHub.
  */
-export class GitHubFileSystem extends VirtualFileSystem {
-    constructor(private files_to_urls: Map<string, URL>) {
+export class GitHubFileSystem extends FileSystemBase {
+    private download_urls: Map<string, URL>;
+
+    constructor(
+        url: string | URL,
+        private gh_repo: GitHubURLInfo,
+        private single_file = false,
+    ) {
         super();
+        this.download_urls = new Map<string, URL>();
+
+        // try using `raw.github` directly for single file
+        if (single_file) {
+            // Handles URLs like this:
+            // https://github.com/wntrblm/Helium/blob/main/hardware/board/board.kicad_sch
+            // In single-file mode, just store file basename
+            const guc_url = gh_user_content.convert_url(url);
+            const name = basename(guc_url);
+            this.download_urls.set(name, guc_url);
+        }
     }
 
-    public static async fromURLs(...urls: (string | URL)[]) {
-        // Handles URLs like this:
-        // https://github.com/wntrblm/Helium/blob/main/hardware/board/board.kicad_sch
+    async load_file(path: string): Promise<File> {
+        const download_url = this.download_urls.get(path);
+        if (!download_url) {
+            throw new Error(`File ${path} not found!`);
+        }
 
-        const files_to_urls = new Map();
+        return await gh_user_content.get(download_url);
+    }
 
-        for (const url of urls) {
-            const info = GitHub.parse_url(url);
+    async enumerate(cur_dir: string): Promise<FileEntry[]> {
+        if (this.single_file) {
+            // single file, return all files directly
+            return Array.from(this.download_urls.keys()).map((v) => ({
+                type: "file",
+                path: v,
+            }));
+        }
 
-            if (!info || !info.owner || !info.repo) {
-                continue;
+        const base_dir = this.gh_repo.path ?? "";
+        const full_path = normalize_join(base_dir, cur_dir);
+
+        const contents = await gh.repos_contents(
+            this.gh_repo.owner,
+            this.gh_repo.repo,
+            full_path,
+            this.gh_repo.ref,
+        );
+
+        const result: FileEntry[] = [];
+        for (const it of contents) {
+            if (it.type === "file" && GitHubFileSystem.is_kicad_file(it.name)) {
+                const path = decodeURI(it.path);
+                const file_path = based_on(base_dir, path);
+
+                this.download_urls.set(file_path, new URL(it.download_url));
+
+                result.push({
+                    type: "file",
+                    path: file_path,
+                });
+            } else if (it.type === "dir") {
+                const path = decodeURI(it.path);
+                const dir_path = based_on(base_dir, path);
+
+                result.push({
+                    type: "directory",
+                    path: dir_path,
+                });
             }
+        }
 
-            // Link to the root of a repo, treat it as tree using HEAD
-            if (info.type == "root") {
-                info.ref = "HEAD";
+        return result;
+    }
+
+    public static async fromURLs(
+        url: string | URL,
+    ): Promise<GitHubFileSystem | null> {
+        const info = GitHub.parse_url(url);
+
+        if (!info) {
+            return null;
+        }
+
+        // Link to the root of a repo, treat it as tree using HEAD
+        if (info.type == "root") {
+            info.ref = "HEAD";
+            info.type = "tree";
+        }
+
+        // If it's one file just load one file.
+        let single_file = false;
+        if (info.type === "blob") {
+            const ext_name = extension(info.path!);
+            if (["kicad_sch", "kicad_pcb"].includes(ext_name)) {
+                single_file = true;
+            } else {
+                // Link to non-kicad file, try using the containing directory.
                 info.type = "tree";
-            }
-
-            // Link to a single file.
-            if (info.type == "blob") {
-                const guc_url = gh_user_content.convert_url(url);
-                const name = basename(guc_url);
-                files_to_urls.set(name, guc_url);
-            }
-
-            // Link to a directory.
-            else if (info.type == "tree") {
-                // Get a list of files in the directory.
-                const gh_file_list = (await gh.repos_contents(
-                    info.owner,
-                    info.repo,
-                    info.path ?? "",
-                    info.ref,
-                )) as Record<string, string>[];
-
-                for (const gh_file of gh_file_list) {
-                    const name = gh_file["name"];
-                    const download_url = gh_file["download_url"];
-                    if (
-                        !name ||
-                        !download_url ||
-                        !kicad_extensions.includes(extension(name))
-                    ) {
-                        continue;
-                    }
-
-                    files_to_urls.set(name, download_url);
+                if (ext_name.length !== 0) {
+                    info.path = dirname(info.path!);
                 }
             }
         }
 
-        return new GitHubFileSystem(files_to_urls);
-    }
-
-    public override *list() {
-        yield* this.files_to_urls.keys();
-    }
-
-    public override get(name: string): Promise<File> {
-        const url = this.files_to_urls.get(name);
-
-        if (!url) {
-            throw new Error(`File ${name} not found!`);
-        }
-
-        return gh_user_content.get(url);
-    }
-
-    public override has(name: string) {
-        return Promise.resolve(this.files_to_urls.has(name));
-    }
-
-    public override async download(name: string) {
-        // Note: we can't just use the GitHub URL to download since the anchor
-        // tag method used by initiate_download() only works for same-origin
-        // or data: urls, so this actually fetch()s the file and then initiates
-        // the download.
-        initiate_download(await this.get(name));
+        return new GitHubFileSystem(url, info, single_file);
     }
 }

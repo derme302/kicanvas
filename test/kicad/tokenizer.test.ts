@@ -4,7 +4,7 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { assert } from "@esm-bundle/chai";
+import { assert } from "chai";
 
 import * as tokenizer from "../../src/kicad/tokenizer";
 
@@ -120,6 +120,31 @@ suite("kicad.tokenizer.tokenize(): s-expression tokenizer", function () {
             OPEN_TOKEN,
             [ATOM, "6x84OPr6+j7y"],
             [ATOM, "0+6li2sAAAAASU/VORK5CYII="],
+            CLOSE_TOKEN,
+        ]);
+    });
+
+    test("with embedded data containing pipes", function () {
+        const tokens = tokenizer.tokenize(
+            "(data |KLUv/aCvzgcAAAAQiVBORw0KGgoAAAANSUhEUgAABiAAAANoCAYAAABJLCIrAAAABHNCSVQICAgI)",
+        );
+        assert_tokens(tokens, [
+            OPEN_TOKEN,
+            [ATOM, "data"],
+            [
+                ATOM,
+                "|KLUv/aCvzgcAAAAQiVBORw0KGgoAAAANSUhEUgAABiAAAANoCAYAAABJLCIrAAAABHNCSVQICAgI",
+            ],
+            CLOSE_TOKEN,
+        ]);
+    });
+
+    test("with pipe character in middle of atom", function () {
+        const tokens = tokenizer.tokenize("(test |middle|end)");
+        assert_tokens(tokens, [
+            OPEN_TOKEN,
+            [ATOM, "test"],
+            [ATOM, "|middle|end"],
             CLOSE_TOKEN,
         ]);
     });

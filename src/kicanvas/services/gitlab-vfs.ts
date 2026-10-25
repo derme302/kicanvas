@@ -4,95 +4,118 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { initiate_download } from "../../base/dom/download";
-import { basename, extension } from "../../base/paths";
-import { GitLab, GitLabUserContent } from "./gitlab";
-import { VirtualFileSystem } from "./vfs";
-
-const kicad_extensions = ["kicad_pcb", "kicad_pro", "kicad_sch"];
-const gl_user_content = new GitLabUserContent();
-const gl = new GitLab();
+import {
+    based_on,
+    basename,
+    dirname,
+    extension,
+    normalize_join,
+} from "../../base/paths";
+import { GitLab, type GitLabURLInfo } from "./gitlab";
+import { FileSystemBase, type FileEntry } from "./vfs";
 
 /**
  * Virtual file system for GitLab.
  */
-export class GitLabFileSystem extends VirtualFileSystem {
-    constructor(private files_to_urls: Map<string, URL>) {
+export class GitLabFileSystem extends FileSystemBase {
+    private repo_paths = new Map<string, string>();
+
+    /**
+     * @param gl_repo - Parsed GitLab URL. `path` must be a directory, or the
+     *      path to a single file if `single_file` is true.
+     */
+    constructor(
+        private gl_repo: GitLabURLInfo,
+        private single_file = false,
+    ) {
         super();
+
+        if (single_file) {
+            // In single-file mode, just store the file basename.
+            const path = gl_repo.path!;
+            this.repo_paths.set(basename(path), path);
+        }
     }
 
-    public static async fromURLs(...urls: (string | URL)[]) {
-        // Handles URLs like this:
-        // https://gitlab.com/derme302/jellyfish-and-starfish/-/blob/main/hardware/jellyfish_tailboard/jellyfish_tailboard.kicad_pcb
+    private get ref() {
+        return this.gl_repo.ref ?? "HEAD";
+    }
 
-        const files_to_urls = new Map();
+    async load_file(path: string): Promise<File> {
+        const repo_path = this.repo_paths.get(path);
+        if (!repo_path) {
+            throw new Error(`File ${path} not found!`);
+        }
 
-        for (const url of urls) {
-            const info = GitLab.parse_url(url);
+        const blob = await GitLab.get_raw_file(
+            this.gl_repo.project,
+            repo_path,
+            this.ref,
+        );
 
-            if (!info || !info.owner || !info.repo) {
-                continue;
-            }
+        return new File([blob], basename(path));
+    }
 
-            // Link to a single file.
-            if (info.type == "blob") {
-                const guc_url = gl_user_content.convert_url(url);
-                const name = basename(guc_url);
-                files_to_urls.set(name, guc_url);
-            }
+    async enumerate(cur_dir: string): Promise<FileEntry[]> {
+        if (this.single_file) {
+            return Array.from(this.repo_paths.keys()).map((path) => ({
+                type: "file",
+                path: path,
+            }));
+        }
 
-            // Link to a directory.
-            else if (info.type == "tree") {
-                // Get a list of files in the directory.
-                const gl_file_list = (await gl.repos_contents(
-                    info.owner,
-                    info.repo,
-                    info.path ?? "",
-                    info.ref,
-                )) as Record<string, string>[];
+        const base_dir = this.gl_repo.path ?? "";
+        const full_path = normalize_join(base_dir, cur_dir);
 
-                for (const gl_file of gl_file_list) {
-                    const name = gl_file["name"];
-                    const download_url = gl_file["download_url"];
-                    if (
-                        !name ||
-                        !download_url ||
-                        !kicad_extensions.includes(extension(name))
-                    ) {
-                        continue;
-                    }
+        const contents = await GitLab.repos_contents(
+            this.gl_repo.project,
+            full_path,
+            this.ref,
+        );
 
-                    files_to_urls.set(name, download_url);
-                }
+        const result: FileEntry[] = [];
+        for (const it of contents) {
+            const path = based_on(base_dir, it.path);
+
+            if (it.type === "blob" && GitLabFileSystem.is_kicad_file(it.name)) {
+                this.repo_paths.set(path, it.path);
+                result.push({ type: "file", path: path });
+            } else if (it.type === "tree") {
+                result.push({ type: "directory", path: path });
             }
         }
 
-        return new GitLabFileSystem(files_to_urls);
+        return result;
     }
 
-    public override *list() {
-        yield* this.files_to_urls.keys();
-    }
+    public static async fromURLs(
+        url: string | URL,
+    ): Promise<GitLabFileSystem | null> {
+        const info = GitLab.parse_url(url);
 
-    public override get(name: string): Promise<File> {
-        const url = this.files_to_urls.get(name);
-
-        if (!url) {
-            throw new Error(`File ${name} not found!`);
+        if (!info) {
+            return null;
         }
 
-        return gl_user_content.get(url);
-    }
+        // Link to the root of a repo, treat it as a tree using HEAD.
+        if (info.type === "root") {
+            info.type = "tree";
+            info.ref = "HEAD";
+            info.path = "";
+        }
 
-    public override has(name: string) {
-        return Promise.resolve(this.files_to_urls.has(name));
-    }
+        // If it's one file just load one file.
+        let single_file = false;
+        if (info.type === "blob") {
+            const ext_name = extension(info.path!);
+            if (["kicad_sch", "kicad_pcb"].includes(ext_name)) {
+                single_file = true;
+            } else if (ext_name.length !== 0) {
+                // Link to non-kicad file, try using the containing directory.
+                info.path = dirname(info.path!);
+            }
+        }
 
-    public override async download(name: string) {
-        // Note: we can't just use the GitLab URL to download since the anchor
-        // tag method used by initiate_download() only works for same-origin
-        // or data: urls, so this actually fetch()s the file and then initiates
-        // the download.
-        initiate_download(await this.get(name));
+        return new GitLabFileSystem(info, single_file);
     }
 }

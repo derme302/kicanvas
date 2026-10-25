@@ -13,9 +13,10 @@
 import { Angle, Arc, Matrix3, Vec2 } from "../../base/math";
 import * as log from "../../base/log";
 import { Circle, Color, Polygon, Polyline, Renderer } from "../../graphics";
+import { StrokeParams } from "../../kicad/common.ts";
 import * as board_items from "../../kicad/board";
-import { EDAText, StrokeFont } from "../../kicad/text";
-import { DocumentPainter, ItemPainter } from "../base/painter";
+import { EDAText, StrokeFont, TextAttributes } from "../../kicad/text";
+import { DocumentPainter, ItemPainter, StrokePainter } from "../base/painter";
 import { ViewLayerNames } from "../base/view-layers";
 import {
     CopperVirtualLayerNames,
@@ -25,6 +26,7 @@ import {
     ViewLayer,
     copper_layers_between,
     virtual_layer_for,
+    is_manufacturing_layer,
 } from "./layers";
 import type { BoardTheme } from "../../kicad";
 
@@ -39,9 +41,71 @@ abstract class BoardItemPainter extends ItemPainter {
     get filter_net(): number | null {
         return (this.view_painter as BoardPainter).filter_net;
     }
+
+    protected isFillValid(fill: string): boolean {
+        return Boolean(fill && fill !== "none" && fill !== "no");
+    }
 }
 
-class LinePainter extends BoardItemPainter {
+abstract class GraphicItemPainter extends BoardItemPainter {
+    protected styled_line(
+        lines: Vec2[],
+        width: number,
+        color: Color,
+        stroke_style: StrokeParams,
+    ) {
+        const draw_line = (lines: Vec2[]) => {
+            this.gfx.line(lines, width, color);
+        };
+
+        StrokePainter.line(lines, width, stroke_style, draw_line);
+    }
+}
+
+abstract class NetNameItemPainter extends BoardItemPainter {
+    // Drawing the netname on `center` in region `region`
+    protected draw_net_name(
+        net_name: string,
+        center: Vec2,
+        text_width: number,
+        max_font_size: number,
+        color: Color,
+    ) {
+        const text_attr = new TextAttributes();
+
+        const text_center = center.copy().multiply(10000);
+
+        // Keep the font size consistent for short text.
+        const stroke_width = text_width / Math.max(net_name.length, 3);
+
+        // Use a smaller text size to improve visibility.
+        const netname_font_size =
+            Math.min(max_font_size, stroke_width) * 10000 * 0.95;
+
+        text_attr.color = color;
+        text_attr.bold = true;
+        text_attr.size = new Vec2(netname_font_size, netname_font_size);
+        text_attr.stroke_width = netname_font_size / 8;
+
+        // Mirror the text if the board is flipped.
+        text_attr.mirrored = this.gfx.state.flipped;
+
+        StrokeFont.default().draw(this.gfx, net_name, text_center, text_attr);
+    }
+
+    // Get displayed netname, e.g. "Sheet/Name" -> "Name"
+    protected static displayed_netname(
+        netname: string | undefined,
+    ): string | undefined {
+        if (!netname) return undefined;
+
+        const level_names = netname.split("/");
+
+        return level_names.slice(-1)[0]!;
+    }
+}
+
+class LinePainter extends GraphicItemPainter {
     classes = [board_items.GrLine, board_items.FpLine];
 
     layers_for(item: board_items.GrLine | board_items.FpLine) {
@@ -52,11 +116,11 @@ class LinePainter extends BoardItemPainter {
         if (this.filter_net) return;
 
         const points = [s.start, s.end];
-        this.gfx.line(new Polyline(points, s.width, layer.color));
+        this.styled_line(points, s.width, layer.color, s.stroke_params);
     }
 }
 
-class RectPainter extends BoardItemPainter {
+class RectPainter extends GraphicItemPainter {
     classes = [board_items.GrRect, board_items.FpRect];
 
     layers_for(item: board_items.GrRect | board_items.FpRect) {
@@ -67,23 +131,26 @@ class RectPainter extends BoardItemPainter {
         if (this.filter_net) return;
 
         const color = layer.color;
+
+        // use the same order as KiCad
+        // https://gitlab.com/kicad/code/develop/-/blob/master/common/eda_shape.cpp#L1616
         const points = [
             r.start,
-            new Vec2(r.start.x, r.end.y),
-            r.end,
             new Vec2(r.end.x, r.start.y),
+            r.end,
+            new Vec2(r.start.x, r.end.y),
             r.start,
         ];
 
-        this.gfx.line(new Polyline(points, r.width, color));
+        this.styled_line(points, r.width, color, r.stroke_params);
 
-        if (r.fill && r.fill != "none") {
+        if (this.isFillValid(r.fill)) {
             this.gfx.polygon(new Polygon(points, color));
         }
     }
 }
 
-class PolyPainter extends BoardItemPainter {
+class PolyPainter extends GraphicItemPainter {
     classes = [board_items.Poly, board_items.GrPoly, board_items.FpPoly];
 
     layers_for(
@@ -101,16 +168,21 @@ class PolyPainter extends BoardItemPainter {
         const color = layer.color;
 
         if (p.width) {
-            this.gfx.line(new Polyline([...p.pts, p.pts[0]!], p.width, color));
+            this.styled_line(
+                [...p.polyline, p.polyline[0]!],
+                p.width,
+                color,
+                p.stroke_params,
+            );
         }
 
-        if (p.fill && p.fill != "none") {
-            this.gfx.polygon(new Polygon(p.pts, color));
+        if (this.isFillValid(p.fill)) {
+            this.gfx.polygon(new Polygon(p.polyline, color));
         }
     }
 }
 
-class ArcPainter extends BoardItemPainter {
+class ArcPainter extends GraphicItemPainter {
     classes = [board_items.GrArc, board_items.FpArc];
 
     layers_for(item: board_items.GrArc | board_items.FpArc) {
@@ -122,11 +194,12 @@ class ArcPainter extends BoardItemPainter {
 
         const arc = a.arc;
         const points = arc.to_polyline();
+        // TODO: stroke style
         this.gfx.line(new Polyline(points, arc.width, layer.color));
     }
 }
 
-class CirclePainter extends BoardItemPainter {
+class CirclePainter extends GraphicItemPainter {
     classes = [board_items.GrCircle, board_items.FpCircle];
 
     layers_for(item: board_items.GrCircle | board_items.FpCircle) {
@@ -147,18 +220,19 @@ class CirclePainter extends BoardItemPainter {
             c.width,
         );
 
-        if (c.fill && c.fill != "none") {
+        if (this.isFillValid(c.fill)) {
             this.gfx.circle(
                 new Circle(arc.center, arc.radius + (c.width ?? 0), color),
             );
         } else {
             const points = arc.to_polyline();
+            // TODO: stroke style
             this.gfx.line(new Polyline(points, arc.width, color));
         }
     }
 }
 
-class TraceSegmentPainter extends BoardItemPainter {
+class TraceSegmentPainter extends NetNameItemPainter {
     classes = [board_items.LineSegment];
 
     layers_for(item: board_items.LineSegment) {
@@ -175,7 +249,7 @@ class TraceSegmentPainter extends BoardItemPainter {
     }
 }
 
-class TraceArcPainter extends BoardItemPainter {
+class TraceArcPainter extends NetNameItemPainter {
     classes = [board_items.ArcSegment];
 
     layers_for(item: board_items.ArcSegment) {
@@ -193,12 +267,12 @@ class TraceArcPainter extends BoardItemPainter {
     }
 }
 
-class ViaPainter extends BoardItemPainter {
+class ViaPainter extends NetNameItemPainter {
     classes = [board_items.Via];
 
     layers_for(v: board_items.Via): string[] {
         if (v.layers) {
-            // blind/buried vias have two layers - the start and end layer,
+            // Blind/buried vias have two layers - the start and end layer,
             // and should only be drawn on the layers they're actually on.
             const layers = [];
 
@@ -301,16 +375,16 @@ class ZonePainter extends BoardItemPainter {
                 continue;
             }
 
-            this.gfx.polygon(new Polygon(p.pts, layer.color));
+            this.gfx.polygon(new Polygon(p.polyline, layer.color));
         }
     }
 }
 
-class PadPainter extends BoardItemPainter {
+class PadPainter extends NetNameItemPainter {
     classes = [board_items.Pad];
 
     layers_for(pad: board_items.Pad): string[] {
-        // TODO: Port KiCAD's logic over.
+        // TODO: Port KiCad's logic over.
         const layers: string[] = [];
 
         for (const layer of pad.layers) {
@@ -335,12 +409,21 @@ class PadPainter extends BoardItemPainter {
         switch (pad.type) {
             case "thru_hole":
                 layers.push(LayerNames.pad_holewalls);
+                layers.push(LayerNames.pad_holes_netname);
                 layers.push(LayerNames.pad_holes);
                 break;
             case "np_thru_hole":
                 layers.push(LayerNames.non_plated_holes);
                 break;
             case "smd":
+                // Only use pads_front_netname/pads_back_netname in SMD pads.
+                // Thru_hole pads uses the pad_holes_netname layer
+                if (layers.includes(LayerNames.pads_front)) {
+                    layers.push(LayerNames.pads_front_netname);
+                } else if (layers.includes(LayerNames.pads_back)) {
+                    layers.push(LayerNames.pads_back_netname);
+                }
+                break;
             case "connect":
                 break;
             default:
@@ -374,9 +457,85 @@ class PadPainter extends BoardItemPainter {
             layer.name == LayerNames.pad_holes ||
             layer.name == LayerNames.non_plated_holes;
 
-        if (is_hole_layer && pad.drill != null) {
+        const is_netname_layer =
+            layer.name == LayerNames.pads_front_netname ||
+            layer.name == LayerNames.pads_back_netname ||
+            layer.name == LayerNames.pad_holes_netname;
+
+        const net_name = PadPainter.pad_netname(pad);
+
+        if (is_netname_layer) {
+            // See also:
+            // https://gitlab.com/kicad/code/kicad/-/blob/master/pcbnew/pcb_painter.cpp#L1379
+            const pad_size = PadPainter.get_pad_orth_size(pad);
+
+            // Calculate the maximum text size and rotation angle
+            let max_width = pad_size.x;
+            let max_font_size = pad_size.y;
+            let text_rotated = -pad.parent.at.rotation;
+            if (pad_size.x < pad_size.y * 0.95) {
+                text_rotated += 90;
+                max_width = pad_size.y;
+                max_font_size = pad_size.x;
+            }
+
+            max_font_size = Math.min(max_font_size, 10);
+
+            // Keep the text upright
+            const pad_rotate = pad.at.rotation;
+            while (pad_rotate + text_rotated > 90) {
+                text_rotated -= 180;
+            }
+            while (pad_rotate + text_rotated <= -90) {
+                text_rotated += 180;
+            }
+
+            // Calculate the offset for pad number and net name if necessary
+            let y_offset_pad_num = 0;
+            let y_offset_pad_net = 0;
+            if (net_name !== undefined && pad.number !== "") {
+                // 3 gives better visibility than kicad's default value of 2.5
+                max_font_size = max_font_size / 3;
+                y_offset_pad_net = max_font_size / 1.4;
+                y_offset_pad_num = max_font_size / 1.7;
+            }
+
+            // Keep the text centered
+            if (pad.drill?.offset) {
+                this.gfx.state.matrix.translate_self(
+                    pad.drill.offset.x,
+                    pad.drill.offset.y,
+                );
+            }
+
+            // Apply the text rotation
+            const rotate_mat = Matrix3.rotation(Angle.deg_to_rad(text_rotated));
+            this.gfx.state.multiply(rotate_mat);
+
+            // Render the pad_number
+            if (pad.number !== "") {
+                this.draw_net_name(
+                    pad.number,
+                    new Vec2(0, -y_offset_pad_num),
+                    max_width,
+                    max_font_size,
+                    color,
+                );
+            }
+
+            // Render netname
+            if (net_name !== undefined) {
+                this.draw_net_name(
+                    net_name,
+                    new Vec2(0, y_offset_pad_net),
+                    max_width,
+                    max_font_size,
+                    color,
+                );
+            }
+        } else if (is_hole_layer && pad.drill != null) {
             if (!pad.drill.oval) {
-                const drill_pos = center.add(pad.drill.offset);
+                const drill_pos = center;
                 this.gfx.circle(
                     new Circle(drill_pos, pad.drill.diameter / 2, color),
                 );
@@ -435,7 +594,7 @@ class PadPainter extends BoardItemPainter {
                     break;
                 case "roundrect":
                 case "trapezoid":
-                    // KiCAD approximates rounded rectangle using four line segments
+                    // KiCad approximates rounded rectangles using four line segments
                     // with their width set to the round radius. Clever bastards.
                     // Since our polylines aren't filled, we'll add both a polygon
                     // and a polyline.
@@ -498,9 +657,7 @@ class PadPainter extends BoardItemPainter {
                             half_size.y - half_width,
                         );
 
-                        const pad_pos = center.add(
-                            pad.drill?.offset || new Vec2(0, 0),
-                        );
+                        const pad_pos = center;
                         const pad_start = pad_pos.sub(half_len);
                         const pad_end = pad_pos.add(half_len);
 
@@ -534,6 +691,39 @@ class PadPainter extends BoardItemPainter {
 
         this.gfx.state.pop();
     }
+
+    // Get displayed netname for a pad, if it's no_connect, return "X"
+    private static pad_netname(pad: board_items.Pad): string | undefined {
+        // Display "X" for no_connect pads
+        // https://gitlab.com/kicad/code/kicad/-/blob/master/pcbnew/pcb_painter.cpp#L1305
+        if (pad.pintype !== undefined && pad.pintype.includes("no_connect")) {
+            return "X";
+        }
+
+        return PadPainter.displayed_netname(pad.netname);
+    }
+
+    // Get pad outline size
+    private static get_pad_orth_size(pad: board_items.Pad): Vec2 {
+        const pad_size = pad.size.copy();
+
+        const obj_angle = pad.parent.at.rotation + 36000;
+
+        // Swap x with y if pad is not 0 deg or 180 deg
+        if (obj_angle % 180 !== 0) {
+            [pad_size.x, pad_size.y] = [pad_size.y, pad_size.x];
+        }
+
+        // Don't allow a 45° rotation to bloat a pad's bounding box unnecessarily
+        const limit = Math.min(pad_size.x, pad_size.y) * 1.1;
+
+        if (pad_size.x > limit && pad_size.y > limit) {
+            pad_size.x = limit;
+            pad_size.y = limit;
+        }
+
+        return pad_size;
+    }
 }
 
 class GrTextPainter extends BoardItemPainter {
@@ -563,6 +753,10 @@ class GrTextPainter extends BoardItemPainter {
         edatext.apply_at(t.at);
 
         edatext.attributes.color = layer.color;
+
+        if (!is_manufacturing_layer(layer.name) && this.gfx.state.flipped) {
+            // TODO: donot flip text in non-manufacturing layers
+        }
 
         this.gfx.state.push();
         StrokeFont.default().draw(
@@ -631,6 +825,56 @@ class FpTextPainter extends BoardItemPainter {
         this.gfx.state.push();
         this.gfx.state.matrix = Matrix3.identity();
 
+        StrokeFont.default().draw(
+            this.gfx,
+            edatext.shown_text,
+            edatext.text_pos,
+            edatext.attributes,
+        );
+        this.gfx.state.pop();
+    }
+}
+
+class PropertyTextPainter extends BoardItemPainter {
+    classes = [board_items.SymbolProperty];
+
+    layers_for(t: board_items.SymbolProperty) {
+        return [t.layer];
+    }
+
+    paint(layer: ViewLayer, t: board_items.SymbolProperty) {
+        if (this.filter_net) return;
+
+        if (t.hide || !t.shown_text || !t.has_symbol_prop) {
+            return;
+        }
+
+        const edatext = new EDAText(t.shown_text);
+
+        edatext.apply_effects(t.effects);
+        edatext.apply_at(t.at);
+
+        edatext.attributes.color = layer.color;
+        edatext.attributes.keep_upright = !t.at.unlocked;
+
+        // Keep the text upright if needed
+        if (edatext.attributes.keep_upright) {
+            while (edatext.text_angle.degrees > 90) {
+                edatext.text_angle.degrees -= 180;
+            }
+            while (edatext.text_angle.degrees <= -90) {
+                edatext.text_angle.degrees += 180;
+            }
+        }
+
+        // Looks like the rotation angle for KiCad's symbol attribute rendering
+        // is standalone, so we need to subtract it from its parent's rotation angle.
+        if (t.parent) {
+            const rot = t.parent.at.rotation;
+            edatext.text_angle.degrees -= rot;
+        }
+
+        this.gfx.state.push();
         StrokeFont.default().draw(
             this.gfx,
             edatext.shown_text,
@@ -866,7 +1110,7 @@ class DimensionPainter extends BoardItemPainter {
         this.gfx.line([ext_start, ext_end], thickness, layer.color);
 
         // Draw crossbar
-        // TODO: KiCAD checks to see if the text overlaps the crossbar and
+        // TODO: KiCad checks to see if the text overlaps the crossbar and
         // conditionally splits or hides the crossbar.
         this.gfx.line([xbar_start, xbar_end], thickness, layer.color);
 
@@ -980,6 +1224,7 @@ export class BoardPainter extends DocumentPainter {
             new FootprintPainter(this, gfx),
             new GrTextPainter(this, gfx),
             new FpTextPainter(this, gfx),
+            new PropertyTextPainter(this, gfx),
             new DimensionPainter(this, gfx),
         ];
     }

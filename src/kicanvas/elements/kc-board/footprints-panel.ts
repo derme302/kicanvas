@@ -26,7 +26,6 @@ export class KCBoardFootprintsPanelElement extends KCUIElement {
             await this.viewer.loaded;
             this.sort_footprints();
             super.connectedCallback();
-            this.setup_events();
         })();
     }
 
@@ -41,7 +40,7 @@ export class KCBoardFootprintsPanelElement extends KCUIElement {
         );
     }
 
-    private setup_events() {
+    override initialContentCallback() {
         this.addEventListener("kc-ui-menu:select", (e) => {
             const item = (e as CustomEvent).detail as KCUIMenuItemElement;
 
@@ -56,7 +55,8 @@ export class KCBoardFootprintsPanelElement extends KCUIElement {
         // selection changes.
         this.addDisposable(
             this.viewer.addEventListener(KiCanvasSelectEvent.type, () => {
-                this.menu.selected = this.viewer.selected?.context.uuid ?? null;
+                this.menu.selected =
+                    this.viewer.selected?.context.uuid_text ?? null;
             }),
         );
 
@@ -99,7 +99,7 @@ export class KCBoardFootprintsPanelElement extends KCUIElement {
             const match_text = `${fp.library_link} ${fp.descr} ${fp.layer} ${ref} ${val} ${fp.tags}`;
 
             const entry = html`<kc-ui-menu-item
-                name="${fp.uuid}"
+                name="${fp.unique_id}"
                 data-match-text="${match_text}">
                 <span class="narrow">${ref}</span><span>${val}</span>
             </kc-ui-menu-item>`;

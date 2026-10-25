@@ -6,36 +6,30 @@
 
 import { later } from "../../base/async";
 import { DropTarget } from "../../base/dom/drag-drop";
-import { first } from "../../base/iterator";
-import * as log from "../../base/log";
+import { FilePicker } from "../../base/dom/file-picker";
 import { CSS, attribute, html, query } from "../../base/web-components";
 import { KCUIElement, KCUIIconElement } from "../../kc-ui";
-import { KicadPCB, KicadSch } from "../../kicad";
 import { sprites_url } from "../icons/sprites";
 import { Project } from "../project";
-import { GitHub } from "../services/github";
 import { GitHubFileSystem } from "../services/github-vfs";
-import { FetchFileSystem, type VirtualFileSystem } from "../services/vfs";
+import { CodebergFileSystem } from "../services/codeberg-vfs";
+import { GitLabFileSystem } from "../services/gitlab-vfs";
+import { FetchFileSystem, type IFileSystem } from "../services/vfs";
 import { KCBoardAppElement } from "./kc-board/app";
 import { KCSchematicAppElement } from "./kc-schematic/app";
-import type { KCProjectPanelElement } from "./project-panel";
 
 import kc_ui_styles from "../../kc-ui/kc-ui.css";
 import shell_styles from "./kicanvas-shell.css";
 
 import "../icons/sprites";
-import "./kc-board/app";
-import "./kc-schematic/app";
-import "./project-panel";
-import { GitLabFileSystem } from "../services/gitlab-vfs";
-import { GitLab } from "../services/gitlab";
+import "./common/project-panel";
 
 // Setup KCUIIconElement to use icon sprites.
 KCUIIconElement.sprites_url = sprites_url;
 
 /**
  * <kc-kicanvas-shell> is the main entrypoint for the standalone KiCanvas
- * application- it's the thing you see when you go to kicanvas.org.
+ * application: It's the thing you see when you go to kicanvas.org.
  *
  * The shell is responsible for managing the currently loaded Project and
  * switching between the different viewer apps (<kc-schematic-app>,
@@ -57,7 +51,7 @@ KCUIIconElement.sprites_url = sprites_url;
 class KiCanvasShellElement extends KCUIElement {
     static override styles = [
         ...KCUIElement.styles,
-        // TODO: Figure out a better way to handle these two styles.
+        // TODO: Find a better way to handle these two styles.
         new CSS(kc_ui_styles),
         new CSS(shell_styles),
     ];
@@ -66,7 +60,6 @@ class KiCanvasShellElement extends KCUIElement {
 
     #schematic_app: KCSchematicAppElement;
     #board_app: KCBoardAppElement;
-    #project_panel: KCProjectPanelElement;
 
     constructor() {
         super();
@@ -85,10 +78,20 @@ class KiCanvasShellElement extends KCUIElement {
     @query(`input[name="link"]`, true)
     public link_input: HTMLInputElement;
 
+    @query(`button[name="open_local"]`, true)
+    public open_file_button: HTMLButtonElement;
+
     override initialContentCallback() {
         const url_params = new URLSearchParams(document.location.search);
-        const github_paths = url_params.getAll("github");
-        const gitlab_paths = url_params.getAll("gitlab");
+
+        const urls = [
+            ...url_params.getAll("github"),
+            ...url_params.getAll("gitlab"),
+            ...url_params.getAll("repo"),
+        ];
+
+        // Only load the first URL
+        const url = urls[0];
 
         later(async () => {
             if (this.src) {
@@ -97,14 +100,12 @@ class KiCanvasShellElement extends KCUIElement {
                 return;
             }
 
-            if (github_paths.length) {
-                const vfs = await GitHubFileSystem.fromURLs(...github_paths);
-                await this.setup_project(vfs);
-                return;
-            }
+            if (url) {
+                const vfs = await this.load_repo(url);
+                if (!vfs) {
+                    return;
+                }
 
-            if (gitlab_paths.length) {
-                const vfs = await GitLabFileSystem.fromURLs(...gitlab_paths);
                 await this.setup_project(vfs);
                 return;
             }
@@ -114,114 +115,81 @@ class KiCanvasShellElement extends KCUIElement {
             });
         });
 
-        this.addEventListener("file:select", (e) => {
-            e.stopPropagation();
-            const detail = (e as CustomEvent).detail;
-            this.load_file(detail.filename, detail.sheet_path);
-        });
-
         this.link_input.addEventListener("input", async (e) => {
             const link = this.link_input.value;
-            let vfs;
-            const location = new URL(window.location.href);
+            const vfs = await this.load_repo(link);
 
-            if (!GitHub.parse_url(link)) {
+            if (!vfs) {
+                // TODO: show error message: invaild URL
+                console.error(`Invalid URL: ${link}`);
                 return;
-            } else {
-                vfs = await GitHubFileSystem.fromURLs(link);
-                location.searchParams.set("github", link);
-            }
-            if (!GitLab.parse_url(link)) {
-                return;
-            } else {
-                vfs = await GitLabFileSystem.fromURLs(link);
-                location.searchParams.set("gitlab", link);
             }
 
             await this.setup_project(vfs);
+
+            const location = new URL(window.location.href);
+            location.searchParams.set("repo", link);
             window.history.pushState(null, "", location);
+        });
+
+        this.open_file_button.addEventListener("click", async (e) => {
+            FilePicker.pick(async (vfs) => {
+                await this.setup_project(vfs);
+            });
         });
     }
 
-    private async setup_project(vfs: VirtualFileSystem) {
+    private async load_repo(url: string): Promise<IFileSystem | null> {
+        return (
+            (await GitHubFileSystem.fromURLs(url)) ??
+            (await CodebergFileSystem.fromURLs(url)) ??
+            (await GitLabFileSystem.fromURLs(url))
+        );
+    }
+
+    private async setup_project(vfs: IFileSystem) {
         this.loaded = false;
         this.loading = true;
 
-        log.start("<kc-kicanvas-shell>");
         try {
+            await vfs.setup();
             await this.project.load(vfs);
-            this.#project_panel.update();
-            await this.load_default_file();
+            this.project.set_active_page(this.project.first_page);
             this.loaded = true;
         } catch (e) {
             console.error(e);
         } finally {
             this.loading = false;
-            log.finish();
-        }
-    }
-
-    private async load_default_file() {
-        const root = this.project.root_page;
-
-        if (root) {
-            log.message(`Loading root schematic file ${root.filename}`);
-            return await this.load_file(root.filename, root.path);
-        }
-        const doc = first(this.project.items());
-
-        if (doc) {
-            log.message(`Loading first valid file ${doc.filename}`);
-            return await this.load_file(doc.filename);
-        }
-
-        log.error("No valid KiCAD files found in project");
-        throw new Error("No valid KiCAD files found in project");
-    }
-
-    private async load_file(filename: string, sheet_path?: string) {
-        const doc = await this.project.by_name(filename);
-
-        if (sheet_path) {
-            this.#project_panel.selected = `${filename}//${sheet_path}`;
-        } else {
-            this.#project_panel.selected = filename;
-        }
-
-        if (doc instanceof KicadPCB) {
-            this.#board_app.classList.remove("is-hidden");
-            this.#schematic_app.classList.add("is-hidden");
-            await this.#board_app.load(doc);
-        } else if (doc instanceof KicadSch) {
-            this.#board_app.classList.add("is-hidden");
-            this.#schematic_app.classList.remove("is-hidden");
-            await this.#schematic_app.load(doc, sheet_path);
-        } else {
-            log.error(`Unable to load ${filename}`);
         }
     }
 
     override render() {
-        this.#schematic_app = html` <kc-schematic-app
-            class="is-hidden"></kc-schematic-app>` as KCSchematicAppElement;
-        this.#board_app = html`<kc-board-app
-            class="is-hidden"></kc-board-app>` as KCBoardAppElement;
-        this.#project_panel =
-            html`<kc-project-panel></kc-project-panel>` as KCProjectPanelElement;
+        this.#schematic_app = html`
+            <kc-schematic-app controls="full"></kc-schematic-app>
+        ` as KCSchematicAppElement;
+        this.#board_app = html`
+            <kc-board-app controls="full"></kc-board-app>
+        ` as KCBoardAppElement;
 
         return html`
             <kc-ui-app>
-                <kc-sprites-src></kc-sprites-src>
                 <section class="overlay">
                     <h1>
-                        <img src="kicanvas.png" />
+                        <img src="images/kicanvas.png" />
                         KiCanvas
                     </h1>
                     <p>
-                        KiCanvas is an <strong>interactive</strong>,
-                        <strong>browser-based</strong> viewer for KiCAD
-                        schematics and boards. It's in <strong>alpha</strong> so
-                        please
+                        KiCanvas is an
+                        <strong>interactive</strong>
+                        ,
+                        <strong>browser-based</strong>
+                        viewer for KiCad schematics and boards. You can learn
+                        more from the
+                        <a href="https://kicanvas.org/home" target="_blank"
+                            >docs</a
+                        >. It's in
+                        <strong>alpha</strong>
+                        so please
                         <a
                             href="https://github.com/theacodes/kicanvas/issues/new/choose"
                             target="_blank">
@@ -231,28 +199,52 @@ class KiCanvasShellElement extends KCUIElement {
                     <input
                         name="link"
                         type="text"
-                        placeholder="Paste a GitHub or GitLab link"
+                        placeholder="Paste a GitHub/GitLab/Codeberg link..."
                         autofocus />
-                    <p>or drag & drop your KiCAD files</p>
+                    <p>
+                        or drag & drop your KiCad files, or<button
+                            name="open_local"
+                            class="link_button">
+                            open from local
+                        </button>
+                    </p>
                     <p class="note">
-                        KiCanvas runs entirely within your browser, so your
+                        KiCanvas is
+                        <a
+                            href="https://github.com/theacodes/kicanvas"
+                            target="_blank"
+                            >free & open source</a
+                        >
+                        and supported by
+                        <a
+                            href="https://github.com/theacodes/kicanvas#special-thanks"
+                            >community donations</a
+                        >
+                        with significant support from
+                        <a href="https://partsbox.com/" target="_blank"
+                            >PartsBox</a
+                        >,
+                        <a href="https://blues.io/" target="_blank">Blues</a>,
+                        <a href="https://blog.mithis.net/" target="_blank"
+                            >Mithro</a
+                        >,
+                        <a href="https://github.com/jeremysf">Jeremy Gordon</a>,
+                        &
+                        <a href="https://github.com/jamesneal" target="_blank"
+                            >James Neal</a
+                        >. KiCanvas runs entirely within your browser, so your
                         files don't ever leave your machine.
                     </p>
                     <p class="github">
                         <a
                             href="https://github.com/theacodes/kicanvas"
                             target="_blank"
-                            title="Visit on GitHub"
-                            ><img src="github-mark-white.svg"
-                        /></a>
+                            title="Visit on GitHub">
+                            <img src="images/github-mark-white.svg" />
+                        </a>
                     </p>
                 </section>
-                <main>
-                    <kc-ui-floating-toolbar location="top">
-                        <div slot="left">${this.#project_panel}</div>
-                    </kc-ui-floating-toolbar>
-                    ${this.#schematic_app} ${this.#board_app}
-                </main>
+                <main>${this.#schematic_app} ${this.#board_app}</main>
             </kc-ui-app>
         `;
     }

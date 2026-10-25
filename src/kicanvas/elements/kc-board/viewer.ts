@@ -4,79 +4,50 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { attribute, html } from "../../../base/web-components";
-import { KCUIElement } from "../../../kc-ui";
-import type { KicadPCB } from "../../../kicad";
-import { KiCanvasLoadEvent } from "../../../viewers/base/events";
+import { html } from "../../../base/web-components";
 import { BoardViewer } from "../../../viewers/board/viewer";
-import { Preferences, WithPreferences } from "../../preferences";
-import themes from "../../themes";
+import { KCViewerElement } from "../common/viewer";
+import type { KCContextMenuElement } from "../common/context-menu";
 
-export class KCBoardViewerElement extends WithPreferences(KCUIElement) {
-    #canvas: HTMLCanvasElement;
-    viewer: BoardViewer;
-    selected: any[] = [];
+import "../common/context-menu";
 
-    @attribute({
-        type: Boolean,
-    })
-    public loaded: boolean;
+export class KCBoardViewerElement extends KCViewerElement<BoardViewer> {
+    #contextMenu: KCContextMenuElement | null = null;
 
-    @attribute({ type: String })
-    theme: string;
-
-    private get board_theme() {
-        // If the theme attribute is set, override preferences.
-        if (this.theme) {
-            return themes.by_name(this.theme).board;
-        } else {
-            return Preferences.INSTANCE.theme.board;
-        }
+    protected override update_theme(): void {
+        this.viewer.theme = this.themeObject.board;
     }
 
-    override initialContentCallback() {
-        (async () => {
-            this.viewer = this.addDisposable(
-                new BoardViewer(this.#canvas, this.board_theme),
-            );
-            await this.viewer.setup();
+    protected override make_viewer(): BoardViewer {
+        const viewer = new BoardViewer(
+            this.canvas,
+            !this.disableinteraction,
+            this.themeObject.board,
+        );
 
-            this.addDisposable(
-                this.viewer.addEventListener(KiCanvasLoadEvent.type, () => {
-                    this.loaded = true;
-                    this.dispatchEvent(new KiCanvasLoadEvent());
-                }),
-            );
-        })();
-    }
+        viewer.contextMenuCallback = (screenX, screenY, items, onSelect) => {
+            if (!this.#contextMenu) {
+                return;
+            }
 
-    override async preferenceChangeCallback(preferences: Preferences) {
-        // Don't apply preference changes if the theme has been set via an attribute.
-        if (this.theme || !this.viewer || !this.viewer.loaded) {
-            return;
-        }
-        this.viewer.theme = this.board_theme;
-        this.viewer.paint();
-        this.viewer.draw();
-    }
+            this.#contextMenu.show(screenX, screenY, items, onSelect);
+        };
 
-    override disconnectedCallback() {
-        super.disconnectedCallback();
-        this.selected = [];
-    }
-
-    async load(src: KicadPCB) {
-        this.loaded = false;
-        await this.viewer.load(src);
+        return viewer;
     }
 
     override render() {
-        this.#canvas = html`<canvas></canvas>` as HTMLCanvasElement;
+        this.canvas = html`<canvas></canvas>` as HTMLCanvasElement;
+        this.#contextMenu =
+            html`<kc-context-menu></kc-context-menu>` as KCContextMenuElement;
 
         return html`<style>
                 :host {
                     display: block;
                     touch-action: none;
+                    width: 100%;
+                    height: 100%;
+                    position: relative;
                 }
 
                 canvas {
@@ -84,7 +55,7 @@ export class KCBoardViewerElement extends WithPreferences(KCUIElement) {
                     height: 100%;
                 }
             </style>
-            ${this.#canvas}`;
+            ${this.canvas} ${this.#contextMenu}`;
     }
 }
 
