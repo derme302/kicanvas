@@ -30,6 +30,7 @@ nav:
     - "Home": home.md
     - "Standalone App": index.md
     - "Embedding": embedding.md
+    - "Self-hosting": self-hosting.md
     - "Roadmap": roadmap.md
     - "Development": development.md
     - "License": license.md
