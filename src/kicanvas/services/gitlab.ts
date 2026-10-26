@@ -7,6 +7,8 @@
 import { request_error_handler, UnknownError } from "./api-error";
 
 export class GitLabURLInfo {
+    /** Web base URL of the GitLab instance, e.g. `https://gitlab.com` */
+    instance: string;
     /** Full project path, including any subgroups, e.g. `group/subgroup/repo` */
     project: string;
     type: "root" | "tree" | "blob";
@@ -24,16 +26,62 @@ export class GitLabTreeResponse {
 }
 
 /**
- * Client for the GitLab (gitlab.com) REST API v4.
+ * Client for the GitLab REST API v4.
  *
- * Only gitlab.com is supported. Self-hosted instances are not.
+ * gitlab.com is always supported. A single self-hosted instance can be added
+ * at runtime with `GitLab.set_custom_instance()`.
  */
 export class GitLab {
-    static readonly host_names = ["gitlab.com", "www.gitlab.com"];
-    static readonly html_base_url = "https://gitlab.com/";
-    static readonly base_url = "https://gitlab.com/api/v4/";
+    static readonly default_instance = "https://gitlab.com";
     static readonly accept_header = "application/json";
     static readonly page_size = 100;
+
+    static #custom_instance: URL | null = null;
+
+    /**
+     * Sets the self-hosted GitLab instance that links will be accepted for, in
+     * addition to gitlab.com. Pass null or an empty string to clear it.
+     *
+     * The instance may live under a subpath, e.g. `https://example.com/gitlab`.
+     *
+     * @returns false (and clears the instance) if `instance` isn't a valid
+     *      http(s) URL.
+     */
+    static set_custom_instance(instance: string | null | undefined): boolean {
+        GitLab.#custom_instance = null;
+
+        if (!instance?.trim()) {
+            return true;
+        }
+
+        try {
+            const url = new URL(instance.trim());
+            if (url.protocol !== "https:" && url.protocol !== "http:") {
+                return false;
+            }
+            url.search = "";
+            url.hash = "";
+            url.pathname = url.pathname.replace(/\/+$/, "");
+            GitLab.#custom_instance = url;
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /** Web base URLs (no trailing slash) of all supported instances */
+    static get instances(): URL[] {
+        const instances = [new URL(GitLab.default_instance)];
+        if (GitLab.#custom_instance) {
+            instances.push(GitLab.#custom_instance);
+        }
+        return instances;
+    }
+
+    /** REST API base URL for an instance's web base URL */
+    static api_url(instance: string): string {
+        return `${instance.replace(/\/+$/, "")}/api/v4/`;
+    }
 
     /**
      * Parse an html (user-facing) URL
@@ -51,22 +99,43 @@ export class GitLab {
     static parse_url(url: string | URL): GitLabURLInfo | null {
         let parsed: URL;
         try {
-            parsed = new URL(url, GitLab.html_base_url);
+            parsed = new URL(url, GitLab.default_instance);
         } catch {
             return null;
         }
 
-        if (!GitLab.host_names.includes(parsed.hostname)) {
-            return null;
+        if (parsed.hostname === "www.gitlab.com") {
+            parsed.hostname = "gitlab.com";
         }
 
-        let parts: string[];
-        try {
-            parts = parsed.pathname
-                .split("/")
-                .filter((s) => s !== "")
-                .map((s) => decodeURIComponent(s));
-        } catch {
+        // Find the instance this URL belongs to and strip its base path.
+        let instance: string | undefined;
+        let parts: string[] = [];
+        for (const candidate of GitLab.instances) {
+            if (parsed.origin !== candidate.origin) {
+                continue;
+            }
+            const base_path = candidate.pathname.replace(/\/+$/, "");
+            if (
+                parsed.pathname !== base_path &&
+                !parsed.pathname.startsWith(base_path + "/")
+            ) {
+                continue;
+            }
+            instance = candidate.origin + base_path;
+            try {
+                parts = parsed.pathname
+                    .slice(base_path.length)
+                    .split("/")
+                    .filter((s) => s !== "")
+                    .map((s) => decodeURIComponent(s));
+            } catch {
+                return null;
+            }
+            break;
+        }
+
+        if (instance === undefined) {
             return null;
         }
 
@@ -91,7 +160,7 @@ export class GitLab {
         const project = project_parts.join("/").replace(/\.git$/, "");
 
         if (rest.length === 0) {
-            return { project, type: "root" };
+            return { instance, project, type: "root" };
         }
 
         const [kind, ref, ...path] = rest;
@@ -100,6 +169,7 @@ export class GitLab {
         }
 
         return {
+            instance,
             project,
             type: kind === "tree" ? "tree" : "blob",
             ref,
@@ -113,10 +183,11 @@ export class GitLab {
     }
 
     private static async fetch(
+        instance: string,
         path: string,
         params?: Record<string, string>,
     ): Promise<Response> {
-        const url = new URL(path, GitLab.base_url);
+        const url = new URL(path, GitLab.api_url(instance));
 
         if (params) {
             url.search = new URLSearchParams(params).toString();
@@ -143,10 +214,11 @@ export class GitLab {
     }
 
     static async request_json<T>(
+        instance: string,
         path: string,
         params?: Record<string, string>,
     ): Promise<T> {
-        const response = await GitLab.fetch(path, params);
+        const response = await GitLab.fetch(instance, path, params);
         return (await response.json()) as T;
     }
 
@@ -156,6 +228,7 @@ export class GitLab {
      * API: https://docs.gitlab.com/ee/api/repositories.html#list-repository-tree
      */
     static async repos_contents(
+        instance: string,
         project: string,
         path: string,
         ref: string,
@@ -164,6 +237,7 @@ export class GitLab {
 
         for (let page = 1; ; page++) {
             const entries = await GitLab.request_json<GitLabTreeResponse[]>(
+                instance,
                 `${GitLab.project_path(project)}/repository/tree`,
                 {
                     path: path,
@@ -187,11 +261,13 @@ export class GitLab {
      * API: https://docs.gitlab.com/ee/api/repository_files.html#get-raw-file-from-repository
      */
     static async get_raw_file(
+        instance: string,
         project: string,
         path: string,
         ref: string,
     ): Promise<Blob> {
         const response = await GitLab.fetch(
+            instance,
             `${GitLab.project_path(project)}/repository/files/${encodeURIComponent(path)}/raw`,
             { ref: ref },
         );

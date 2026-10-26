@@ -48,6 +48,7 @@ export class GitLabFileSystem extends FileSystemBase {
         }
 
         const blob = await GitLab.get_raw_file(
+            this.gl_repo.instance,
             this.gl_repo.project,
             repo_path,
             this.ref,
@@ -68,6 +69,7 @@ export class GitLabFileSystem extends FileSystemBase {
         const full_path = normalize_join(base_dir, cur_dir);
 
         const contents = await GitLab.repos_contents(
+            this.gl_repo.instance,
             this.gl_repo.project,
             full_path,
             this.ref,

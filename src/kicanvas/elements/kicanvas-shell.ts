@@ -13,6 +13,7 @@ import { sprites_url } from "../icons/sprites";
 import { Project } from "../project";
 import { GitHubFileSystem } from "../services/github-vfs";
 import { CodebergFileSystem } from "../services/codeberg-vfs";
+import { GitLab } from "../services/gitlab";
 import { GitLabFileSystem } from "../services/gitlab-vfs";
 import { FetchFileSystem, type IFileSystem } from "../services/vfs";
 import { KCBoardAppElement } from "./kc-board/app";
@@ -74,6 +75,13 @@ class KiCanvasShellElement extends KCUIElement {
 
     @attribute({ type: String })
     public src: string;
+
+    /**
+     * Base URL of a self-hosted GitLab instance to accept links for, in
+     * addition to gitlab.com, e.g. `https://git.example.com`.
+     */
+    @attribute({ type: String })
+    public gitlab_host: string | null;
 
     @query(`input[name="link"]`, true)
     public link_input: HTMLInputElement;
@@ -140,6 +148,10 @@ class KiCanvasShellElement extends KCUIElement {
     }
 
     private async load_repo(url: string): Promise<IFileSystem | null> {
+        if (!GitLab.set_custom_instance(this.gitlab_host)) {
+            console.error(`Invalid gitlab-host: ${this.gitlab_host}`);
+        }
+
         return (
             (await GitHubFileSystem.fromURLs(url)) ??
             (await CodebergFileSystem.fromURLs(url)) ??
